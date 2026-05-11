@@ -29,7 +29,14 @@ def parse_args():
 def main():
     args = parse_args()
     print(f"Device: {config.DEVICE}")
-    ckpt = Path(args.checkpoint) if args.checkpoint else config.ARTIFACTS_DIR / f"clip_finetuned_hn{args.suffix}.pt"
+    if args.checkpoint:
+        ckpt = Path(args.checkpoint)
+    elif args.suffix:
+        # Multi-seed runs land in the writable artifacts dir
+        ckpt = config.ARTIFACTS_DIR / f"clip_finetuned_hn{args.suffix}.pt"
+    else:
+        # Default: use the env-aware CLIP_FT_HN (Kaggle input dataset, or local artifacts/)
+        ckpt = config.CLIP_FT_HN
     if not ckpt.exists():
         raise SystemExit(f"Missing checkpoint: {ckpt}. Train first via train_hn.py.")
 
