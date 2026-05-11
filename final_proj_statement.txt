@@ -1,0 +1,139 @@
+Visual Product Search Engine
+Visual Recognition Course Project
+Problem Statement & Motivation
+Students often face a simple problem in online shopping: they see a product image they like, but
+cannot find similar items using text search.
+Most e-commerce search systems rely on product titles and tags. This causes two common issues:
+• Language mismatch: users type simple words like ”black hoodie”, while catalog descriptions
+may use different or technical terms.
+• Inconsistent metadata: different sellers describe the same type of product differently, so
+keyword search becomes unreliable.
+To solve this, this project builds a query-by-image product search system. Instead of searching
+by text only, the user uploads an image, and the system returns visually and semantically similar
+products.
+We use the DeepFashion In-Shop Clothes Retrieval dataset. Images with the same item id
+are treated as the same product for training and evaluation.
+The system has two parts:
+• Offline indexing: prepare product embeddings and store them in a vector index.
+• Online retrieval: process a query image and return top matching products quickly.
+System Architecture
+Offline Indexing Pipeline
+For each catalog image, the system performs the following steps:
+Step 1. Product localization (YOLO). The detector identifies the primary clothing item and crops
+the image to reduce background noise.
+Step 2. Semantic captioning (BLIP-2). A BLIP-2 captioner generates a consistent product description (e.g., color, fit, material, and style details).
+Step 3. Cross-modal embedding (CLIP). The cropped image embedding and caption embedding
+are fused into a single normalized vector:
+vi = α ϕV (ˆxi) + (1 − α) ϕT (ci), ∥vi∥ = 1 (1)
+1
+where vi
+is the final fused embedding, xˆi
+is the cropped image, ci
+is the generated caption for
+item i, ϕV (·) is the CLIP visual encoder, ϕT (·) is the CLIP text encoder, and α ∈ [0, 1] controls
+the image–text weighting.
+Step 4. Approximate Nearest Neighbor (ANN) indexing using Hierarchical Navigable Small
+World (HNSW). The fused vectors, item IDs, and metadata are stored in a vector index (e.g.,
+Pinecone or Milvus) for fast nearest-neighbor search.
+Online Query Pipeline
+Given a user query image q, retrieval proceeds as follows:
+Step 1. Query preprocessing. YOLO crops the main product region from the query image.
+Step 2. Query encoding. The cropped query is mapped to a CLIP visual embedding.
+Step 3. Candidate retrieval. The system searches the ANN index and returns top-K candidates using
+cosine similarity.
+Step 4. Semantic re-ranking (BLIP-2 ITM). A BLIP-2 image-text matching score is computed for
+each candidate caption with the query image, and candidates are re-ranked to produce the final
+result list.
+In summary, YOLO improves visual focus, BLIP-2 improves semantic consistency, CLIP aligns
+image and text signals, and HNSW enables low-latency retrieval at scale.
+Fine-Tuning Strategy
+We use pre-trained CLIP, BLIP-2, and YOLO models. For this project, we only fine-tune CLIP.
+BLIP-2 and YOLO stay frozen.
+CLIP Fine-tuning
+Goal. Put images of the same item id closer in embedding space, and push different items farther
+apart.
+What we update.
+• Fine-tune CLIP vision encoder (last 4 blocks at minimum; full encoder if compute allows).
+• Keep CLIP text encoder frozen.
+Evaluation Protocol
+Dataset and Split
+Split Role (Simple)
+Train Images used to train (fine-tune) the model.
+Query Test images used as input to search for similar products.
+Gallery Product image database where the model searches for
+matches.
+2
+Ground truth. Two images are a correct match if and only if they share the same item id.
+Metrics
+We use three standard retrieval metrics.
+Metric Meaning
+Recall@K Fraction of queries for which at least one relevant
+item is retrieved in the top-K results.
+NDCG@K Ranking metric that gives higher score when
+relevant items appear earlier in the top-K list
+(position-aware gain).
+mAP@K Mean of per-query average precision up to K,
+rewarding systems that retrieve relevant items and
+place them in better rank positions.
+We report results at K ∈ {5, 10, 15}. For example, Recall@5 checks only the top 5 returned products.
+Experiments - Ablation Study
+Three conditions isolate the contribution of each component:
+ID Configuration Purpose
+A Vision-only CLIP
+(α = 1)
+Baseline: no semantic alignment, no
+fine-tuning.
+B Frozen CLIP +
+frozen BLIP-2
+Measures gain from captioning without
+fine-tuning.
+C Fine-tuned CLIP
++ frozen BLIP-2
+Isolates CLIP contrastive fine-tuning
+contribution.
+All conditions use the same HNSW index and retrieval configuration to ensure a fair comparison.
+Results are reported as mean ± standard deviation over 3–4 random seeds, using team members’
+roll numbers as seed values. For ablation settings B and C, teams can choose any two α values in
+the range [0, 1] for their experiments.
+Deliverables
+Teams should submit the following:
+1. Final Report. A complete technical report covering problem motivation, dataset usage,
+system architecture, training/fine-tuning strategy, evaluation protocol, experimental results, and
+conclusions.
+2. Interactive Demo Application (Streamlit). A web app built in Streamlit that:
+• accepts an input image from the user,
+• runs YOLO detection and shows the cropped product output,
+3
+• asks for user confirmation (e.g., Confirm crop / Re-crop) before proceeding,
+• runs the remaining visual product search pipeline after confirmation,
+• displays top-K retrieved results with relevant metadata/similarity scores,
+• clearly demonstrates end-to-end functionality for project evaluation.
+3. Demo Script for Batch Evaluation. Given a folder of query images, the script should run
+the retrieval pipeline end-to-end and compute the project metrics: Recall@K, NDCG@K, and
+mAP@K (for K ∈ {5, 10, 15}), using the team’s best-performing model.
+4. GitHub Repository Link. A GitHub repository link containing all models and code referenced
+in the report.
+Evaluation Rubrics
+Total marks: 15
+Component Marks
+A. Viva and understanding 5
+Ability to answer questions on
+pipeline/model choices
+2
+Working Streamlit Demo 3
+B. Final report quality 5
+Clear structure (problem, method, results) 2
+Correct technical explanation of approach 3
+C. Experimental results 5
+Correct implementation and fair
+experiment setup
+1
+Metric reporting (Recall@K, NDCG@K,
+mAP@K) and relative performance
+comparison
+4
+Total 15
+Implementation note. The detection module is model-agnostic: any YOLO variant can be used
+based on user preference and hardware constraints, including the same YOLO version used in the
+first mini project.
+4

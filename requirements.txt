@@ -1,0 +1,23 @@
+# Visual Product Search Engine — runtime deps
+# Tested with Python 3.13 (Anaconda) on Linux + CUDA 12.8 (RTX 4060)
+
+torch>=2.6
+torchvision>=0.21
+open_clip_torch>=3.0
+transformers>=4.45
+ultralytics>=8.3
+hnswlib>=0.8
+Pillow>=10.0
+numpy>=2.0
+tqdm>=4.66
+scikit-learn>=1.5
+
+# Streamlit demo
+streamlit>=1.40
+
+# For BLIP-2 8-bit captioning at inference time
+bitsandbytes>=0.43
+accelerate>=1.0
+
+# Kaggle CLI (only for fetching team artifacts)
+kaggle>=1.7

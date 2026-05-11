@@ -1,0 +1,11 @@
+Update on project 2
+You are not supposed to use the text descriptions for the items. Use Blip2 to describe the items. 
+
+Regarding the bbox it's upto you
+I can think of few approaches to do 
+1. Use bbox annotations for offline indexing and for online use ur pre trained yolo for inference 
+2. Fine tune yolo on this dataset as well using bbox annotations and use it for both offline indexing and inference
+3. Ignore bbox annotations completely and use fine tuned yolo in project 1 for both offline indexing and inference
+
+
+There are marks for relative perfomance (you will get to know about this shortly after mini project 1 marks) , so it's upto you to try out which variant
