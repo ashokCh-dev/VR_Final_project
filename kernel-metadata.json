@@ -1,0 +1,20 @@
+{
+  "id": "ashok1145/vr-final-overnight",
+  "title": "VR Final - Overnight Pipeline",
+  "code_file": "kaggle_overnight.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": true,
+  "enable_tpu": false,
+  "enable_internet": true,
+  "dataset_sources": [
+    "ashok1145/vr-fproj",
+    "ashok1145/clip-hn-checkpoint",
+    "taralsanka/blip-updated-captions",
+    "taralsanka/best-yolo-pt",
+    "taralsanka/clip-saved-outputs"
+  ],
+  "competition_sources": [],
+  "kernel_sources": []
+}
