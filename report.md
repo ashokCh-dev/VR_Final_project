@@ -52,11 +52,21 @@ We fine-tune CLIP **only**; YOLO and BLIP-2 stay frozen.
 | Epochs | 10 |
 | Effective batch | 32 (micro-batch 8 × grad-accum 4) |
 | AMP | `torch.amp` fp16 |
-| Loss | InfoNCE(z_a, z_p) + λ · TripletMargin(z_a, z_p, z_n), λ=0.5, τ=0.07, margin=0.3 |
+| Loss | $\mathcal{L} = \mathcal{L}_{\text{InfoNCE}}(z_a, z_p) + \lambda \cdot \mathcal{L}_{\text{tri}}(z_a, z_p, z_n)$, λ=0.5, τ=0.07, margin=0.3 (defined below) |
 | Hard negatives | top-10 mined per anchor from a frozen-CLIP HNSW pass, pool refreshed every 3 epochs with the latest weights |
 | Image augmentation | OpenCLIP default preprocessing (center crop 224 × 224, normalize) |
 
 The **hard-negative pool** is the main lever vs. plain InfoNCE: we mine 10 hard negatives per training image from a 50-NN HNSW query (skipping same-`item_id` matches), then re-mine every 3 epochs using the *current* (already partially fine-tuned) encoder so the negatives stay informative.
+
+For a mini-batch of *B* anchor-positive pairs $\{(z_a^{(i)}, z_p^{(i)})\}_{i=1}^B$ with all features L2-normalised, the symmetric InfoNCE term over the union $Z = \{z_a, z_p\}$ (size $2B$) is:
+
+$$\mathcal{L}_{\text{InfoNCE}} = -\frac{1}{2B} \sum_{i=1}^{2B} \log \frac{\exp(z_i \cdot z_{\text{pos}(i)} / \tau)}{\sum_{j \neq i} \exp(z_i \cdot z_j / \tau)}$$
+
+where $\text{pos}(i)$ is the in-batch positive (anchor↔positive pair). The triplet term with cosine-distance margin is:
+
+$$\mathcal{L}_{\text{tri}} = \frac{1}{B} \sum_{i=1}^{B} \max\big(0,\ (1 - z_a^{(i)} \cdot z_p^{(i)}) - (1 - z_a^{(i)} \cdot z_n^{(i)}) + m\big), \quad m = 0.3$$
+
+where $z_n^{(i)}$ is a hard negative sampled from the mined pool for anchor $i$. Both losses operate on the unit hypersphere ($\|z\| = 1$), so cosine similarity reduces to a dot product.
 
 Training was performed on a single RTX 4060 Laptop (8 GB VRAM) — the small micro-batch + grad-accum is the memory adaptation versus the original Kaggle reference (batch=32). One run completes in ~50 minutes; loss falls **1.18 → 0.24** across 10 epochs (final InfoNCE 0.099, Triplet 0.273).
 
@@ -64,12 +74,36 @@ Training was performed on a single RTX 4060 Laptop (8 GB VRAM) — the small mic
 
 - **Splits:** As provided. Train = 25,882, Gallery = 12,612, Query = 14,218. Ground truth: two images match iff they share `item_id`.
 - **Metrics:** Recall@K, NDCG@K, mAP@K at **K ∈ {5, 10, 15}**.
-- **Implementation:** Single source of truth at `src/metrics.py`. We use `min(n_relevant, k)` as the denominator for NDCG's IDCG and mAP's normaliser (see §6.1).
+- **Implementation:** Single source of truth at `src/metrics.py`.
 - **Random component for mean ± std:**
   - For **trained** conditions (C_α=0.7_hn): two full fine-tuning runs with seeds 83 and 588 (different torch RNG → different DataLoader shuffle, hard-neg sampling order, and weight init via the LR schedule). A third seed (527) was queued on Kaggle but cut off by the 12 h kernel limit.
   - For **non-trained** conditions (A, B, C-vanilla, C-hn α=0.5): query-set bootstrap — resample 80% of the query set with replacement, four seeds, report mean ± std of the per-bootstrap means.
 
 This choice is per the project clarification: *"choose any random component, justify in viva."* For frozen models there is no training stochasticity to vary; query-set bootstrap is the only meaningful source of variance.
+
+### 4.1 Metric definitions
+
+For each query *q* with ground-truth `item_id` and retrieved list `R = (r_1, …, r_K)` ordered by descending cosine similarity, let
+
+$$\text{hit}(r_i, q) = \begin{cases} 1 & \text{if } \text{item\_id}(r_i) = \text{item\_id}(q) \\ 0 & \text{otherwise} \end{cases}$$
+
+Let *n_rel(q)* be the number of gallery images sharing *q*'s item_id (multiple images can match a single query, since DeepFashion stores ~2–5 views per item).
+
+**Recall@K** — hit-rate variant, per the project statement: *"fraction of queries for which at least one relevant item is retrieved in the top-K results."*
+
+$$\text{Recall@K}(q) = \mathbb{1}\Big[\,\textstyle\sum_{i=1}^{K} \text{hit}(r_i, q) \geq 1\Big] \quad ; \quad \text{Recall@K} = \frac{1}{|Q|} \sum_{q \in Q} \text{Recall@K}(q)$$
+
+**NDCG@K** — binary relevance, log-base-2 discount, normalised by the ideal DCG of `min(n_rel, K)` relevant items at top ranks:
+
+$$\text{DCG@K}(q) = \sum_{i=1}^{K} \frac{\text{hit}(r_i, q)}{\log_2(i+1)} \qquad \text{IDCG@K}(q) = \sum_{i=1}^{\min(n_{rel}(q), K)} \frac{1}{\log_2(i+1)}$$
+
+$$\text{NDCG@K}(q) = \frac{\text{DCG@K}(q)}{\text{IDCG@K}(q)} \quad ; \quad \text{NDCG@K} = \frac{1}{|Q|} \sum_q \text{NDCG@K}(q)$$
+
+**mAP@K** — mean of per-query Average Precision at K. *AP@K* uses cumulative precision at each hit, normalised by `min(n_rel, K)`:
+
+$$\text{AP@K}(q) = \frac{1}{\min(n_{rel}(q), K)} \sum_{i=1}^{K} \text{hit}(r_i, q) \cdot \frac{\textstyle\sum_{j=1}^{i} \text{hit}(r_j, q)}{i} \quad ; \quad \text{mAP@K} = \frac{1}{|Q|} \sum_q \text{AP@K}(q)$$
+
+The `min(n_rel, k)` denominator is the *only* way an upper bound of 1 is guaranteed. The original notebook used `k` here, which inflated mAP whenever `n_rel < k` (e.g. mAP@10 = 1.67 for condition C). All numbers in this report use the corrected denominator.
 
 ## 5. Ablation conditions
 
