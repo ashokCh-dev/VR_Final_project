@@ -223,7 +223,7 @@ def main():
     print(f"Results — {args.condition}" + (" + ITM rerank" if args.rerank else ""))
     print("=" * 50)
     for k in args.k:
-        for m in ["Recall", "NDCG", "mAP"]:
+        for m in ["Recall", "Recall_full", "NDCG", "mAP"]:
             mk = f"{m}@{k}"
             if boot is not None and mk in boot:
                 print(f"  {mk}: {results[mk]:.4f}   (boot mean ± std: "

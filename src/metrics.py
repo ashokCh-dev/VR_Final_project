@@ -12,7 +12,19 @@ import numpy as np
 
 
 def recall_at_k(retrieved_ids, relevant_item_id, k):
+    """Hit-rate Recall@K — 1 if any of the top-K share the query's item_id, else 0.
+    This is the variant the project statement asks for."""
     return int(any(iid == relevant_item_id for iid in retrieved_ids[:k]))
+
+
+def recall_at_k_full(retrieved_ids, relevant_item_id, n_relevant, k):
+    """Textbook (Manning et al.) Recall@K — fraction of *all* relevant items
+    that appear in the top-K. n_relevant must be the count of gallery items
+    sharing the query's item_id."""
+    if n_relevant <= 0:
+        return 0.0
+    hits = sum(1 for iid in retrieved_ids[:k] if iid == relevant_item_id)
+    return hits / n_relevant
 
 
 def ndcg_at_k(retrieved_ids, relevant_item_id, n_relevant, k):
@@ -51,7 +63,7 @@ def evaluate_retrieval(query_embs, query_ids, gallery_ids, index, k_list=(5, 10,
 
     max_k = max(k_list)
     gallery_id_arr = np.array(gallery_ids)
-    per_query = {f"{m}@{k}": [] for m in ["Recall", "NDCG", "mAP"] for k in k_list}
+    per_query = {f"{m}@{k}": [] for m in ["Recall", "Recall_full", "NDCG", "mAP"] for k in k_list}
 
     labels, _ = index.knn_query(query_embs, k=max_k)
 
@@ -60,6 +72,7 @@ def evaluate_retrieval(query_embs, query_ids, gallery_ids, index, k_list=(5, 10,
         n_relevant = gallery_id_to_count.get(q_id, 0)
         for k in k_list:
             per_query[f"Recall@{k}"].append(recall_at_k(retrieved_item_ids, q_id, k))
+            per_query[f"Recall_full@{k}"].append(recall_at_k_full(retrieved_item_ids, q_id, n_relevant, k))
             per_query[f"NDCG@{k}"].append(ndcg_at_k(retrieved_item_ids, q_id, n_relevant, k))
             per_query[f"mAP@{k}"].append(average_precision_at_k(retrieved_item_ids, q_id, n_relevant, k))
 
@@ -100,12 +113,13 @@ def evaluate_from_ranked_lists(ranked_item_ids_per_query, query_ids, gallery_ids
     gallery_id_to_count = defaultdict(int)
     for iid in gallery_ids:
         gallery_id_to_count[iid] += 1
-    per_query = {f"{m}@{k}": [] for m in ["Recall", "NDCG", "mAP"] for k in k_list}
+    per_query = {f"{m}@{k}": [] for m in ["Recall", "Recall_full", "NDCG", "mAP"] for k in k_list}
     for q_idx, q_id in enumerate(query_ids):
         retrieved = ranked_item_ids_per_query[q_idx]
         n_relevant = gallery_id_to_count.get(q_id, 0)
         for k in k_list:
             per_query[f"Recall@{k}"].append(recall_at_k(retrieved, q_id, k))
+            per_query[f"Recall_full@{k}"].append(recall_at_k_full(retrieved, q_id, n_relevant, k))
             per_query[f"NDCG@{k}"].append(ndcg_at_k(retrieved, q_id, n_relevant, k))
             per_query[f"mAP@{k}"].append(average_precision_at_k(retrieved, q_id, n_relevant, k))
     return {m: float(np.mean(v)) for m, v in per_query.items()}
