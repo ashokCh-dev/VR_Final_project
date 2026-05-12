@@ -35,7 +35,7 @@ from src.data_utils import (
     parse_bbox_file,
     parse_split_file,
 )
-from src.metrics import evaluate_from_ranked_lists, evaluate_retrieval
+from src.metrics import bootstrap_mean_std, evaluate_from_ranked_lists, evaluate_retrieval
 from src.retrieve import candidates_from_labels, load_named, search
 
 
@@ -58,6 +58,9 @@ def parse_args():
                    help="Apply BLIP-2 ITM re-ranking to top-RERANK_K candidates")
     p.add_argument("--rerank_k", type=int, default=config.RERANK_K,
                    help="Number of candidates pulled before ITM re-rank")
+    p.add_argument("--bootstrap", type=int, default=0,
+                   help="If >0, also compute query-set-bootstrap mean+/-std over N seeds "
+                        "(default seeds 83,588,527,33; resample 80%% with replacement).")
     p.add_argument("--rerank_mode", choices=["blend", "itm", "product"], default="blend",
                    help="How to combine ANN cosine score with ITM probability")
     p.add_argument("--itm_weight", type=float, default=0.3,
@@ -204,8 +207,16 @@ def main():
             )
             ranked_item_ids.append([c["item_id"] for c in ranked])
         results = evaluate_from_ranked_lists(ranked_item_ids, q_ids, gal_ids, k_list=tuple(args.k))
+        per_query = None
     else:
-        results = evaluate_retrieval(q_embs, q_ids, gal_ids, index, k_list=tuple(args.k))
+        results, per_query = evaluate_retrieval(
+            q_embs, q_ids, gal_ids, index, k_list=tuple(args.k), return_per_query=True
+        )
+
+    # ── Optional bootstrap mean+/-std ──
+    boot = None
+    if args.bootstrap > 0 and per_query is not None:
+        boot = bootstrap_mean_std(per_query, n_iters=args.bootstrap)
 
     # ── Report ──
     print("\n" + "=" * 50)
@@ -214,7 +225,11 @@ def main():
     for k in args.k:
         for m in ["Recall", "NDCG", "mAP"]:
             mk = f"{m}@{k}"
-            print(f"  {mk}: {results[mk]:.4f}")
+            if boot is not None and mk in boot:
+                print(f"  {mk}: {results[mk]:.4f}   (boot mean ± std: "
+                      f"{boot[mk]['mean']:.4f} ± {boot[mk]['std']:.4f})")
+            else:
+                print(f"  {mk}: {results[mk]:.4f}")
 
     out_path = Path(args.out) if args.out else config.ARTIFACTS_DIR / (
         f"batch_eval_{args.condition}{'_itm' if args.rerank else ''}.json"
@@ -227,6 +242,8 @@ def main():
         "n_queries": len(q_ids),
         "results": results,
     }
+    if boot is not None:
+        payload["bootstrap"] = boot
     out_path.write_text(json.dumps(payload, indent=2))
     print(f"\nSaved -> {out_path}")
 
