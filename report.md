@@ -70,6 +70,8 @@ where $z_n^{(i)}$ is a hard negative sampled from the mined pool for anchor $i$.
 
 Training was performed on a single RTX 4060 Laptop (8 GB VRAM) — the small micro-batch + grad-accum is the memory adaptation versus the original Kaggle reference (batch=32). One run completes in ~50 minutes; loss falls **1.18 → 0.24** across 10 epochs (final InfoNCE 0.099, Triplet 0.273).
 
+![Training loss curves — total loss across two independent training seeds (left) and per-component loss for seed 83 (right). The triplet loss plateaus near the margin (m=0.3) while InfoNCE drives the remaining decrease; the two seeds track to within ≈0.005 every epoch.](figures/loss_curve.png)
+
 ## 4. Evaluation protocol
 
 - **Splits:** As provided. Train = 25,882, Gallery = 12,612, Query = 14,218. Ground truth: two images match iff they share `item_id`.
@@ -126,6 +128,8 @@ Three settings isolate the contribution of each component, plus one re-ranking a
 ## 6. Results
 
 Headline numbers reported as **mean ± std**. All evaluations use the full 14,218-query set.
+
+![Ablation summary across the 7 conditions. Bars show R@10 (hit-rate, full-Recall) and mAP@10 with bootstrap-std error bars (mostly imperceptible). The dominant lift comes from fine-tuning (A/B → C); hard-neg mining and α=0.7 over α=0.5 each add ~1 pp on top.](figures/ablation_bars.png)
 
 ### Full ablation table
 

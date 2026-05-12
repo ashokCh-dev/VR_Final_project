@@ -6,10 +6,11 @@ Run:
 
 Flow:
   1. Upload a query image.
-  2. YOLO crop is shown side-by-side with the original.
-  3. User clicks "Confirm crop" (or "Re-crop with lower YOLO conf" / "Use full image").
+  2. YOLO runs once and produces three crops — upper body, lower body, full body
+     (heuristic split of the union-of-detections, since our YOLO is single-class).
+  3. User picks a body region via radio and confirms (or re-crops with lower YOLO conf).
   4. CLIP encodes the confirmed crop. HNSW returns top-K candidates.
-  5. (Optional) BLIP-1 ITM re-rank is applied.
+  5. (Optional) BLIP-2 ITM re-rank is applied.
   6. Results are shown as a grid with item_id + similarity score.
 """
 import time
@@ -48,9 +49,9 @@ def get_captions_dict():
 
 @st.cache_resource(show_spinner="Loading YOLO…")
 def get_yolo():
-    from src.yolo_crop import yolo_crop, _get_model
+    from src.yolo_crop import body_region_crops, _get_model
     _get_model()
-    return yolo_crop
+    return body_region_crops
 
 
 # ── Sidebar controls ────────────────────────────────────────────────────────
@@ -64,8 +65,9 @@ condition = st.sidebar.selectbox(
 )
 yolo_conf = st.sidebar.slider("YOLO confidence", 0.05, 0.6, 0.25, 0.05)
 top_k = st.sidebar.slider("Top-K results", 5, 30, config.DEFAULT_K)
-use_rerank = st.sidebar.checkbox("Use BLIP-1 ITM re-rank", value=False,
-                                  help="Re-rank top-50 ANN candidates by image-text matching")
+use_rerank = st.sidebar.checkbox("Use BLIP-2 ITM re-rank", value=False,
+                                  help="Re-rank top-50 ANN candidates by image-text matching. "
+                                       "Note: known to hurt mAP on short product captions.")
 prefer_hn = st.sidebar.checkbox(
     "Prefer hard-neg checkpoint (if available)",
     value=config.CLIP_FT_HN.exists(),
@@ -73,7 +75,7 @@ prefer_hn = st.sidebar.checkbox(
 )
 
 # ── Initial state ───────────────────────────────────────────────────────────
-for k in ["original_pil", "crop_pil", "crop_meta", "confirmed", "results"]:
+for k in ["original_pil", "region_crops", "selected_region", "confirmed", "results"]:
     st.session_state.setdefault(k, None)
 
 # Reset when condition changes
@@ -84,8 +86,8 @@ if st.session_state.get("_last_condition") != condition:
 # ── Main layout ─────────────────────────────────────────────────────────────
 st.title("Visual Product Search Engine")
 st.caption(
-    "DeepFashion In-Shop · YOLO crop → CLIP fused embedding → HNSW ANN → "
-    "(optional) BLIP-1 ITM re-rank"
+    "DeepFashion In-Shop · YOLO crop (upper / lower / full body) → CLIP fused embedding "
+    "→ HNSW ANN → (optional) BLIP-2 ITM re-rank"
 )
 
 uploaded = st.file_uploader("Upload a query image", type=["jpg", "jpeg", "png", "webp"])
@@ -94,52 +96,77 @@ if uploaded is not None:
     pil = Image.open(uploaded).convert("RGB")
     if st.session_state["original_pil"] is None or uploaded.name != st.session_state.get("_last_uploaded"):
         st.session_state["original_pil"] = pil
-        st.session_state["crop_pil"] = None
+        st.session_state["region_crops"] = None
+        st.session_state["selected_region"] = "full"
         st.session_state["confirmed"] = False
         st.session_state["results"] = None
         st.session_state["_last_uploaded"] = uploaded.name
 
 # ── Step 1: YOLO crop with user confirmation ────────────────────────────────
 if st.session_state["original_pil"] is not None and not st.session_state["confirmed"]:
-    st.subheader("Step 1 — Detect and crop the product")
-    yolo_crop = get_yolo()
+    st.subheader("Step 1 — Detect garment regions and pick the body part to search")
+    body_region_crops = get_yolo()
 
-    if st.session_state["crop_pil"] is None:
+    if st.session_state["region_crops"] is None:
         with st.spinner("Running YOLO…"):
-            crop, meta = yolo_crop(st.session_state["original_pil"], conf=yolo_conf)
-        st.session_state["crop_pil"] = crop
-        st.session_state["crop_meta"] = meta
+            crops = body_region_crops(st.session_state["original_pil"], conf=yolo_conf)
+        st.session_state["region_crops"] = crops
 
-    c1, c2 = st.columns(2)
-    with c1:
+    crops = st.session_state["region_crops"]
+    n_dets = len(crops["detections"])
+
+    if n_dets == 0:
+        st.warning(
+            "YOLO didn't detect anything above the confidence threshold — "
+            "the body regions are sliced from the full image instead. "
+            "Try lowering YOLO confidence in the sidebar."
+        )
+    else:
+        st.success(
+            f"YOLO found {n_dets} clothing detection{'s' if n_dets > 1 else ''}. "
+            "Three body-region crops below are heuristic splits of the union of those detections."
+        )
+
+    c0, c1, c2, c3 = st.columns(4)
+    with c0:
         st.image(st.session_state["original_pil"], caption="Original", use_container_width=True)
+    with c1:
+        st.image(crops["upper"], caption="Upper body", use_container_width=True)
     with c2:
-        meta = st.session_state["crop_meta"]
-        cap = f"YOLO crop (conf={meta['score']:.2f})" if meta else "YOLO found nothing — using full image"
-        st.image(st.session_state["crop_pil"], caption=cap, use_container_width=True)
+        st.image(crops["lower"], caption="Lower body", use_container_width=True)
+    with c3:
+        st.image(crops["full"],  caption="Full body",  use_container_width=True)
 
-    b1, b2, b3 = st.columns(3)
-    if b1.button("Confirm crop", type="primary"):
+    region_label = st.radio(
+        "Search for:",
+        options=["Upper body", "Lower body", "Full body"],
+        index=2,
+        horizontal=True,
+        key="region_radio",
+    )
+    region_key = {"Upper body": "upper", "Lower body": "lower", "Full body": "full"}[region_label]
+    st.session_state["selected_region"] = region_key
+
+    b1, b2 = st.columns(2)
+    if b1.button(f"Confirm — search for {region_label.lower()}", type="primary"):
         st.session_state["confirmed"] = True
         st.session_state["results"] = None
         st.rerun()
-    if b2.button("Re-crop (lower YOLO conf)"):
+    if b2.button("Re-run YOLO with lower confidence"):
         with st.spinner("Re-running YOLO with lower conf…"):
-            crop, meta = yolo_crop(st.session_state["original_pil"], conf=max(0.05, yolo_conf - 0.1))
-        st.session_state["crop_pil"] = crop
-        st.session_state["crop_meta"] = meta
-        st.rerun()
-    if b3.button("Use full image (skip crop)"):
-        st.session_state["crop_pil"] = st.session_state["original_pil"]
-        st.session_state["crop_meta"] = None
-        st.session_state["confirmed"] = True
-        st.session_state["results"] = None
+            crops = body_region_crops(
+                st.session_state["original_pil"], conf=max(0.05, yolo_conf - 0.1)
+            )
+        st.session_state["region_crops"] = crops
         st.rerun()
 
 # ── Step 2 & 3: encode + retrieve (+ rerank) ────────────────────────────────
 if st.session_state["confirmed"]:
-    st.subheader("Step 2 — Retrieved products")
+    region = st.session_state["selected_region"]
+    region_label = {"upper": "upper body", "lower": "lower body", "full": "full body"}[region]
+    st.subheader(f"Step 2 — Retrieved products  (searching for {region_label})")
 
+    query_crop = st.session_state["region_crops"][region]
     bin_name, meta_name, alpha, model_type = config.INDEX_FILES[condition]
 
     if st.session_state["results"] is None:
@@ -147,14 +174,12 @@ if st.session_state["confirmed"]:
         index, gal_ids, gal_names, _, _ = get_index(condition)
         captions_dict = get_captions_dict() if (alpha < 1.0 or use_rerank) else {}
 
-        # For the query side: no pre-computed caption, so for α<1 we'd ideally
-        # caption-on-the-fly via BLIP-2. To keep the demo snappy and self-contained,
-        # we use vision-only encoding on the query (alpha=1.0) regardless. The
-        # gallery is still fused at the configured alpha — this matches the
-        # standard "asymmetric" image-to-image retrieval setup.
+        # Query side: no pre-computed caption, so we use vision-only encoding (alpha=1.0
+        # for the query). The gallery is still fused at the configured alpha — standard
+        # asymmetric image-to-image retrieval.
         with st.spinner("CLIP encoding…"):
             t0 = time.time()
-            q_emb = encoder.embed_query(st.session_state["crop_pil"], caption="", alpha=1.0)
+            q_emb = encoder.embed_query(query_crop, caption="", alpha=1.0)
             enc_ms = (time.time() - t0) * 1000
 
         from src.retrieve import candidates_from_labels, search
@@ -168,11 +193,9 @@ if st.session_state["confirmed"]:
         rerank_ms = 0.0
         if use_rerank:
             from src.rerank import rerank_with_itm
-            with st.spinner(f"BLIP-1 ITM re-ranking top-{fetch_k}…"):
+            with st.spinner(f"BLIP-2 ITM re-ranking top-{fetch_k}…"):
                 t0 = time.time()
-                cands = rerank_with_itm(
-                    st.session_state["crop_pil"], cands, captions_dict, top_k=top_k
-                )
+                cands = rerank_with_itm(query_crop, cands, captions_dict, top_k=top_k)
                 rerank_ms = (time.time() - t0) * 1000
         else:
             cands = cands[:top_k]
@@ -181,6 +204,7 @@ if st.session_state["confirmed"]:
             "cands": cands,
             "timing": {"clip_ms": enc_ms, "ann_ms": ann_ms, "rerank_ms": rerank_ms},
             "condition": condition,
+            "region": region,
             "use_rerank": use_rerank,
         }
 
@@ -192,6 +216,10 @@ if st.session_state["confirmed"]:
         + (f" · ITM rerank {t['rerank_ms']:.0f} ms" if r["use_rerank"] else "")
         + f" · {len(cands)} results"
     )
+
+    # Show the actual crop that was used
+    with st.expander("Query crop used for this search"):
+        st.image(query_crop, caption=f"{region_label} (sent to CLIP)", width=240)
 
     cols_per_row = 5
     rows = (len(cands) + cols_per_row - 1) // cols_per_row
@@ -208,14 +236,15 @@ if st.session_state["confirmed"]:
                     st.image(str(img_path), use_container_width=True)
                 else:
                     st.warning(f"missing\n{c['img_name']}")
-                score_label = "ITM" if "itm_score" in c else "cos"
-                score_val = c.get("itm_score", c.get("ann_score", c.get("score", 0.0)))
+                score_label = "ITM" if "combined_score" in c else "cos"
+                score_val = c.get("combined_score", c.get("ann_score", c.get("score", 0.0)))
                 st.caption(
                     f"**#{i+1}** · {c['item_id']}\n\n"
                     f"{score_label}={score_val:.3f}"
                 )
 
     if st.button("New query"):
-        for k in ["original_pil", "crop_pil", "crop_meta", "confirmed", "results", "_last_uploaded"]:
+        for k in ["original_pil", "region_crops", "selected_region", "confirmed",
+                  "results", "_last_uploaded"]:
             st.session_state[k] = None
         st.rerun()
