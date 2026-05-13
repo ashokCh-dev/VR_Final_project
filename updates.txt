@@ -8,4 +8,5 @@ I can think of few approaches to do
 3. Ignore bbox annotations completely and use fine tuned yolo in project 1 for both offline indexing and inference
 
 
-There are marks for relative perfomance (you will get to know about this shortly after mini project 1 marks) , so it's upto you to try out which variant
+Hey guys, addressing a common doubt for project. Given a full image of a person, user should be given an option to search for: 1. upper body, 2 lower body and 3 full body clothes. 
+Something similar to this is also there in the wording of the problem statement. 
