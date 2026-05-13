@@ -207,7 +207,7 @@ Sidebar controls expose the condition (A / B / C / C-HN), α, K, and the rerank 
 
 - **Two seeds, not three.** The third fine-tuning seed (527) hit the Kaggle 12 h kernel cap. With a 24 h kernel or two parallel sessions we'd close this out.
 - **No query-side captioning.** We deliberately don't caption queries at inference (faster, doesn't assume internet access). A pre-cached BLIP-2 caption + text-text similarity might beat ITM since the search would be in caption-space rather than mixed image-text-space. This is the obvious next thing to try given the ITM finding.
-- **Gallery uses ground-truth bbox, queries use YOLO.** Per the project clarification this is approved, but a unified YOLO pipeline (approach 3 of `updates.txt`) would eliminate the train/serve distribution mismatch at some compute cost.
+- **Gallery uses ground-truth bbox, queries use YOLO.** Per the project clarification this is approved, but a unified YOLO pipeline (using the fine-tuned detector from `notebooks/yolo-final-proj.ipynb` for both sides) would eliminate the train/serve distribution mismatch at some compute cost.
 - **CLIP ViT-L/14 is heavy on 8 GB VRAM.** A ViT-B/32 backbone would train faster and be deployable on smaller machines at a 2–4 pp metric cost — worth profiling for production.
 - **Captions are short.** Going from product-name captions (BLIP-2 default) to attribute-rich captions ("black, floral, A-line, mini, summer") would likely give a bigger lift than further fine-tuning. We can fine-tune BLIP-2 on DeepFashion's `list_description_inshop.json` to produce such captions — but per the project clarification we cannot use that file directly.
 
