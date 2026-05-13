@@ -84,6 +84,26 @@ def ablation_bars_plot():
         ("eval_C_alpha0.7_hn.json",  "C-HN\nα=0.7"),
     ]
 
+    # For C-HN α=0.7 / α=0.5 we have proper multi-seed runs — pick those up too.
+    # Map: condition filename -> list of extra seed-JSONs to average in. The first
+    # entry's bootstrap is shown; for multi-seed conditions we override mean+std
+    # with the across-seed values.
+    multi_seed = {
+        "eval_C_alpha0.7_hn.json": [
+            "eval_C_alpha0.7_hn.json",  # seed 83 (this dir's main run)
+            "eval_C_alpha0.7_hn_seed527.json",
+            "eval_C_alpha0.7_hn_seed33.json",
+        ],
+        "eval_C_alpha0.5_hn.json": [
+            "eval_C_alpha0.5_hn.json",
+            "eval_C_alpha0.5_hn_seed527.json",
+            "eval_C_alpha0.5_hn_seed33.json",
+        ],
+    }
+    # Seed 588's α=0.7 point estimates from the Kaggle run (no bootstrap there)
+    seed_588_07 = {"Recall@10": 0.8862, "Recall_full@10": None,
+                   "NDCG@10": 0.5823, "mAP@10": 0.4836}
+
     labels, r10_hit, r10_full, map10, r10_hit_err, r10_full_err, map10_err = [], [], [], [], [], [], []
     for fname, label in conditions:
         p = ARTIFACTS / fname
@@ -93,6 +113,30 @@ def ablation_bars_plot():
         data = json.load(open(p))
         results = data["results"]
         boot = data.get("bootstrap", {})
+
+        # If this condition has multi-seed runs, compute across-seed mean/std
+        if fname in multi_seed:
+            seed_paths = [ARTIFACTS / s for s in multi_seed[fname]]
+            seed_vals = {"Recall@10": [], "Recall_full@10": [], "mAP@10": []}
+            for sp in seed_paths:
+                if sp.exists():
+                    sd = json.load(open(sp))["results"]
+                    for k in seed_vals:
+                        if sd.get(k) is not None:
+                            seed_vals[k].append(sd[k])
+            # Add seed 588 for the α=0.7 row
+            if fname == "eval_C_alpha0.7_hn.json":
+                for k in ["Recall@10", "NDCG@10", "mAP@10"]:
+                    if seed_588_07.get(k) is not None:
+                        seed_vals.setdefault(k, []).append(seed_588_07[k])
+            r10_mean = np.mean(seed_vals["Recall@10"]); r10_std = np.std(seed_vals["Recall@10"], ddof=1)
+            rf_mean  = np.mean(seed_vals["Recall_full@10"]); rf_std = np.std(seed_vals["Recall_full@10"], ddof=1)
+            mp_mean  = np.mean(seed_vals["mAP@10"]); mp_std = np.std(seed_vals["mAP@10"], ddof=1)
+            labels.append(label + f"\n({len(seed_vals['Recall@10'])}-seed)")
+            r10_hit.append(r10_mean); r10_full.append(rf_mean); map10.append(mp_mean)
+            r10_hit_err.append(r10_std); r10_full_err.append(rf_std); map10_err.append(mp_std)
+            continue
+
         labels.append(label)
         r10_hit.append(results["Recall@10"])
         r10_full.append(results["Recall_full@10"])
@@ -119,7 +163,8 @@ def ablation_bars_plot():
     ax.set_xticklabels(labels, fontsize=9)
     ax.set_ylabel("Metric value")
     ax.set_title("Ablation: Recall@10 (hit / full) and mAP@10 by condition\n"
-                 "(mean ± std over 4 query-bootstrap seeds)", fontsize=11)
+                 "Error bars: training-seed variance for C-HN; query-bootstrap variance otherwise.",
+                 fontsize=11)
     ax.set_ylim(0, 1.0)
     ax.grid(axis="y", alpha=0.3)
     ax.legend(loc="upper left")

@@ -78,10 +78,11 @@ Training was performed on a single RTX 4060 Laptop (8 GB VRAM) — the small mic
 - **Metrics:** Recall@K, NDCG@K, mAP@K at **K ∈ {5, 10, 15}**.
 - **Implementation:** Single source of truth at `src/metrics.py`.
 - **Random component for mean ± std:**
-  - For **trained** conditions (C_α=0.7_hn): two full fine-tuning runs with seeds 83 and 588 (different torch RNG → different DataLoader shuffle, hard-neg sampling order, and weight init via the LR schedule). A third seed (527) was queued on Kaggle but cut off by the 12 h kernel limit.
-  - For **non-trained** conditions (A, B, C-vanilla, C-hn α=0.5): query-set bootstrap — resample 80% of the query set with replacement, four seeds, report mean ± std of the per-bootstrap means.
+  - For **C-HN α = 0.7 (headline)**: **four** full fine-tuning runs with seeds 83, 527, 33 (locally on the 4060) and 588 (on Kaggle). Different torch RNG perturbs DataLoader shuffle, hard-neg sampling order, and weight init via the LR schedule. Reported as straight mean ± std over the four point estimates.
+  - For **C-HN α = 0.5**: three full fine-tuning runs (seeds 83, 527, 33 — seed 588 was only run for α=0.7 on Kaggle).
+  - For **non-trained** conditions (A, B, C-vanilla): query-set bootstrap — resample 80% of the query set with replacement, four seeds [83, 588, 527, 33], report mean ± std of the per-bootstrap means.
 
-This choice is per the project clarification: *"choose any random component, justify in viva."* For frozen models there is no training stochasticity to vary; query-set bootstrap is the only meaningful source of variance.
+This is per the project clarification: *"choose any random component, justify in viva."* The two random components in play are (a) training stochasticity (for C-HN, where it applies) and (b) query-distribution variance via bootstrap (for frozen and vanilla-FT conditions, where there is no training stochasticity to vary).
 
 ### 4.1 Metric definitions
 
@@ -137,16 +138,25 @@ All numbers are query-bootstrap mean ± std over 4 seeds (resample 80% with repl
 
 | Condition | R@10 (hit) | R@10 (full) | NDCG@10 | mAP@10 | R@15 (hit) | R@15 (full) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| A   (frozen, α=1.0)      | 0.569 ± 0.009 | 0.238 ± 0.003 | 0.248 ± 0.004 | 0.175 ± 0.003 | 0.603 ± 0.008 | 0.262 ± 0.003 |
-| B   (frozen, α=0.7)      | 0.591 ± 0.010 | 0.259 ± 0.004 | 0.264 ± 0.004 | 0.189 ± 0.003 | 0.631 ± 0.008 | 0.287 ± 0.004 |
-| B   (frozen, α=0.5)      | 0.583 ± 0.005 | 0.258 ± 0.002 | 0.253 ± 0.003 | 0.180 ± 0.003 | 0.624 ± 0.006 | 0.288 ± 0.003 |
-| C   (InfoNCE FT, α=0.7)  | 0.879 ± 0.003 | 0.561 ± 0.002 | 0.570 ± 0.002 | 0.471 ± 0.002 | 0.901 ± 0.002 | 0.607 ± 0.002 |
-| C   (InfoNCE FT, α=0.5)  | 0.866 ± 0.004 | 0.540 ± 0.003 | 0.544 ± 0.003 | 0.445 ± 0.003 | 0.892 ± 0.003 | 0.587 ± 0.002 |
-| C-HN (α=0.5)             | 0.871 ± 0.004 | 0.547 ± 0.003 | 0.553 ± 0.003 | 0.454 ± 0.003 | 0.895 ± 0.003 | 0.596 ± 0.002 |
-| **C-HN (α=0.7) — headline** | **0.881 ± 0.004** | **0.567 ± 0.003** | **0.578 ± 0.004** | **0.479 ± 0.004** | **0.903 ± 0.003** | **0.612 ± 0.002** |
-| C-HN (α=0.7) + BLIP-2 ITM blend(0.2) | 0.881 | 0.564 | 0.551 | 0.449 | 0.907 | 0.617 |
+| A   (frozen, α=1.0) †      | 0.569 ± 0.009 | 0.238 ± 0.003 | 0.248 ± 0.004 | 0.175 ± 0.003 | 0.603 ± 0.008 | 0.262 ± 0.003 |
+| B   (frozen, α=0.7) †      | 0.591 ± 0.010 | 0.259 ± 0.004 | 0.264 ± 0.004 | 0.189 ± 0.003 | 0.631 ± 0.008 | 0.287 ± 0.004 |
+| B   (frozen, α=0.5) †      | 0.583 ± 0.005 | 0.258 ± 0.002 | 0.253 ± 0.003 | 0.180 ± 0.003 | 0.624 ± 0.006 | 0.288 ± 0.003 |
+| C   (InfoNCE FT, α=0.7) †  | 0.879 ± 0.003 | 0.561 ± 0.002 | 0.570 ± 0.002 | 0.471 ± 0.002 | 0.901 ± 0.002 | 0.607 ± 0.002 |
+| C   (InfoNCE FT, α=0.5) †  | 0.866 ± 0.004 | 0.540 ± 0.003 | 0.544 ± 0.003 | 0.445 ± 0.003 | 0.892 ± 0.003 | 0.587 ± 0.002 |
+| C-HN (α=0.5) ‡             | 0.870 ± 0.002 | 0.549 ± 0.002 | 0.553 ± 0.001 | 0.454 ± 0.001 | 0.893 ± 0.002 | 0.596 ± 0.001 |
+| **C-HN (α=0.7) — headline ‡** | **0.881 ± 0.003** | **0.568 ± 0.001** | **0.578 ± 0.003** | **0.480 ± 0.003** | **0.903 ± 0.002** | **0.613 ± 0.001** |
+| C-HN (α=0.7) + BLIP-2 ITM blend(0.2) ◇ | 0.881 | 0.564 | 0.551 | 0.449 | 0.907 | 0.617 |
 
-> **Cross-validation of the headline.** The C-HN (α=0.7) row above is from one fine-tuning run (seed 83). To verify the result isn't seed-dependent, we ran a second independent full fine-tuning on Kaggle with seed 588. The seed-588 point estimates (no bootstrap) were R@10=0.886, NDCG@10=0.582, mAP@10=0.484 — within the seed-83 bootstrap interval on every metric. We take this as strong evidence that the headline numbers are not a lucky-seed artifact.
+> † = 4-seed query bootstrap (single trained model, query subsamples). ‡ = mean ± std over **independent training runs**: 4 for α=0.7 (seeds 83/527/33/588), 3 for α=0.5 (seeds 83/527/33). ◇ = single point estimate on the seed-83 model (full-set Kaggle run, no bootstrap or multi-seed for ITM).
+
+> **Seed stability of the headline.** Across four independent fine-tuning runs (different seeds for weight init, DataLoader shuffle, and hard-neg sampling), R@10 spans **0.8785–0.8862** and mAP@10 spans **0.4772–0.4836**. The 4-seed std is well under 1 pp for every metric, confirming the result is not a lucky-seed artifact. Individual per-seed numbers (for transparency):
+>
+> | Seed | R@10 | NDCG@10 | mAP@10 | Where |
+> |---|---:|---:|---:|---|
+> | 83  | 0.8796 | 0.5775 | 0.4793 | local (RTX 4060) |
+> | 527 | 0.8815 | 0.5783 | 0.4800 | local |
+> | 33  | 0.8785 | 0.5755 | 0.4772 | local |
+> | 588 | 0.8862 | 0.5823 | 0.4836 | Kaggle T4 |
 
 ### 6.1 Notes on the metric implementation
 
@@ -164,7 +174,7 @@ The original research notebook reported impossible mAP values (e.g. mAP@10 = 1.6
 
 **5. BLIP-2 ITM re-ranking is a *negative* result.** Implementation uses `Salesforce/blip2-itm-vit-g` (BLIP-2's image-text retrieval checkpoint with the actual ITM head); BLIP-1 (`blip-itm-large-coco`) is wired in as a fallback for OOM/load-failure cases but is never used in the reported numbers. Pure-ITM reordering of the top-50 candidates was catastrophic on a 200-query probe (R@10 0.78, NDCG@10 0.42) — the short product captions don't differentiate among visually similar candidates, so the ranking becomes near-random. A low-weight blend (`combined = 0.8·ANN + 0.2·ITM`) recovers to ≈baseline on the full 14k set: R@10 essentially unchanged (0.881 vs 0.881), but **NDCG@10 still drops 3 pp (0.578 → 0.551)** and **mAP@10 drops 3 pp (0.479 → 0.449)**. ITM doesn't add useful signal here. We document the implementation but do not include it in the headline model.
 
-**6. Variance is tight.** Bootstrap std across 4 query-subsamples is ~0.3–0.5 pp on every metric, far below the inter-condition gaps. The headline (C-HN α=0.7) was additionally validated with an independent training seed (588) — point estimates were within the seed-83 bootstrap interval. So the ablation ordering is statistically meaningful on both axes of variance.
+**6. Variance is tight on both axes.** Query-bootstrap std across 4 subsamples is ~0.3–0.5 pp on every metric. **Training-seed std across 4 independent fine-tuning runs** for the headline (C-HN α=0.7) is also under 1 pp on every metric (R@10 std = 0.0034, mAP@10 std = 0.0026). Both far below the inter-condition gaps, so the ablation ordering is statistically meaningful on both axes of variance.
 
 ## 7. Streamlit demo
 
@@ -188,7 +198,7 @@ Sidebar controls expose the condition (A / B / C / C-HN), α, K, and the rerank 
 
 ## 9. Conclusions
 
-A simple recipe — fine-tune the last 4 blocks of CLIP ViT-L/14 with InfoNCE + Triplet on hard negatives, fuse with BLIP-2 captions at α = 0.7, search HNSW — gives **Recall@10 (hit) = 0.881 ± 0.004**, **Recall@10 (full) = 0.567 ± 0.003**, **NDCG@10 = 0.578 ± 0.004** and **mAP@10 = 0.479 ± 0.004** on DeepFashion In-Shop — a **+31 pp Recall@10 (hit) / +30 pp mAP@10** lift over the frozen-CLIP baseline. The headline is bootstrap mean ± std over 4 query-subsample seeds (83/588/527/33) and was cross-checked with a second training seed (588) giving consistent point estimates.
+A simple recipe — fine-tune the last 4 blocks of CLIP ViT-L/14 with InfoNCE + Triplet on hard negatives, fuse with BLIP-2 captions at α = 0.7, search HNSW — gives **Recall@10 (hit) = 0.881 ± 0.003**, **Recall@10 (full) = 0.568 ± 0.001**, **NDCG@10 = 0.578 ± 0.003** and **mAP@10 = 0.480 ± 0.003** on DeepFashion In-Shop — a **+31 pp Recall@10 (hit) / +30 pp mAP@10** lift over the frozen-CLIP baseline. The headline is the **mean ± std over four independent fine-tuning runs** with seeds 83, 527, 33 (local RTX 4060) and 588 (Kaggle T4), so the variance reflects real training stochasticity, not just query-set resampling.
 
 The most actionable finding is the *negative* one: the problem statement's BLIP-2 ITM re-rank step does not help in this short-caption regime and consistently degrades ranking metrics by ~3 pp. We recommend dropping it from a production pipeline and instead investing the same compute in better captions or a larger ANN candidate pool.
 

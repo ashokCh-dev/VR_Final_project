@@ -71,6 +71,8 @@ def parse_args():
     p.add_argument("--suffix", default="",
                    help="Filename suffix for outputs (e.g. '_seed588'). "
                         "Empty -> overwrites clip_finetuned_hn.pt.")
+    p.add_argument("--last_n_blocks", type=int, default=LAST_N_BLOCKS,
+                   help=f"Number of CLIP vision transformer blocks to unfreeze (default {LAST_N_BLOCKS}).")
     return p.parse_args()
 
 
@@ -213,9 +215,10 @@ def main():
     args = parse_args()
     seed = args.seed
     suffix = args.suffix
+    last_n = args.last_n_blocks
     ckpt_name = f"clip_finetuned_hn{suffix}.pt"
     hist_name = f"training_history_hn{suffix}.json"
-    print(f"Device: {DEVICE}  Seed: {seed}  Suffix: '{suffix}'")
+    print(f"Device: {DEVICE}  Seed: {seed}  Suffix: '{suffix}'  last_n_blocks: {last_n}")
     print(f"Will save -> {ckpt_name}, {hist_name}")
     if DEVICE == "cpu":
         print("WARNING: CUDA not available. Training on CPU will be unusably slow. "
@@ -261,7 +264,7 @@ def main():
 
     for p in clip_model.parameters():
         p.requires_grad = False
-    for block in list(clip_model.visual.transformer.resblocks)[-LAST_N_BLOCKS:]:
+    for block in list(clip_model.visual.transformer.resblocks)[-last_n:]:
         for p in block.parameters():
             p.requires_grad = True
     for p in clip_model.visual.ln_post.parameters():

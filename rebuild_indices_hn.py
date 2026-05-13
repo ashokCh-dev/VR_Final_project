@@ -23,7 +23,15 @@ def parse_args():
     p.add_argument("--suffix", default="",
                    help="Filename suffix for both checkpoint (input) and indices (output). "
                         "Outputs always include '_hn' too: gallery_index_C_alpha07_hn{suffix}.bin")
+    p.add_argument("--alphas", type=float, nargs="+", default=[0.7, 0.5],
+                   help="α values to rebuild indices for. Default: 0.7 and 0.5.")
     return p.parse_args()
+
+
+def _alpha_to_string(alpha):
+    """Convert α to a filename-safe string: 0.7->'07', 0.85->'085', 0.5->'05'."""
+    s = f"{alpha:.3f}".rstrip("0").rstrip(".")  # 0.7 -> "0.7", 0.85 -> "0.85"
+    return s.replace("0.", "0").replace(".", "")  # 0.7 -> "07", 0.85 -> "085"
 
 
 def main():
@@ -40,14 +48,15 @@ def main():
     if not ckpt.exists():
         raise SystemExit(f"Missing checkpoint: {ckpt}. Train first via train_hn.py.")
 
-    C_CONDITIONS = [
-        (f"C_alpha0.7_hn{args.suffix}", 0.7,
-         f"gallery_index_C_alpha07_hn{args.suffix}.bin",
-         f"gallery_meta_C_alpha07_hn{args.suffix}.json"),
-        (f"C_alpha0.5_hn{args.suffix}", 0.5,
-         f"gallery_index_C_alpha05_hn{args.suffix}.bin",
-         f"gallery_meta_C_alpha05_hn{args.suffix}.json"),
-    ]
+    C_CONDITIONS = []
+    for alpha in args.alphas:
+        a_str = _alpha_to_string(alpha)  # 0.7 -> "07", 0.85 -> "085"
+        C_CONDITIONS.append((
+            f"C_alpha{alpha}_hn{args.suffix}",
+            alpha,
+            f"gallery_index_C_alpha{a_str}_hn{args.suffix}.bin",
+            f"gallery_meta_C_alpha{a_str}_hn{args.suffix}.json",
+        ))
 
     print(f"Loading hard-neg CLIP: {ckpt}")
     encoder = ClipEncoder(checkpoint_path=ckpt)
