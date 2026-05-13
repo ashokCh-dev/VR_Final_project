@@ -1,9 +1,10 @@
 """Online YOLO crop: detects clothing region(s), produces upper / lower / full body crops.
 
-The bundled YOLO checkpoint (`yolo/best_yolo8l.pt` from project 1) is a single-class
-detector ('clothing'). To meet the upper-body / lower-body / full-body selection
-requirement from updates.txt, we run YOLO once, take the union of all detections
-as the 'person' region, and slice it heuristically:
+The bundled YOLO checkpoint (`yolo/best_yolo8l.pt`, trained via
+`notebooks/yolo-final-proj.ipynb`) is a single-class detector ('clothing').
+To support upper-body / lower-body / full-body selection in the Streamlit demo,
+we run YOLO once, take the union of all detections as the 'person' region, and
+slice it heuristically:
 
   upper body  = top  ~55% of the person bbox
   lower body  = bottom ~55% of the person bbox
