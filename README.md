@@ -13,24 +13,31 @@ Gallery is indexed offline: each catalog image → bbox crop → CLIP image enco
 
 ## Repository layout
 
+This repo is the **viva exhibit**: it shows *what* each pipeline stage does (one notebook per stage) plus the runnable Streamlit demo and the required batch-evaluation script. The dev orchestration scripts that produced our results were kept in a separate working tree and are not included here; the per-stage notebooks document the same logic.
+
 | Path | Purpose |
 | --- | --- |
+| **Entry points** | |
+| `app.py` | Streamlit demo: upload image → YOLO crop → upper / lower / full body select → retrieve top-K → optional BLIP-2 ITM re-rank. |
+| `demo_batch_eval.py` | Batch evaluation script (required deliverable). `--condition`, `--rerank`, `--bootstrap N`, etc. |
+| **`src/` — reusable modules used by both entry points** | |
 | `src/config.py` | Single source of truth for paths + condition registry. Auto-detects Kaggle vs local. |
 | `src/data_utils.py` | DeepFashion split/bbox parsing, bbox crop helper. |
-| `src/metrics.py` | Corrected Recall@K / NDCG@K / mAP@K **+** `bootstrap_mean_std` for query-set resampling. |
-| `src/clip_encoder.py` | OpenCLIP load, image/text encode, fused embedding. |
-| `src/yolo_crop.py` | YOLO online crop with confidence threshold + fallback. |
+| `src/metrics.py` | Recall@K (hit-rate & textbook), NDCG@K, mAP@K — fixed implementation. |
+| `src/clip_encoder.py` | OpenCLIP load, image/text encode, fused embedding `v = α·φV + (1−α)·φT`. |
+| `src/yolo_crop.py` | YOLO online crop + heuristic upper/lower/full body region split. |
+| `src/blip2.py` | BLIP-2 captioning (8-bit) and BLIP-2 ITM scorer. |
 | `src/retrieve.py` | HNSW build / save / load / search. |
-| `src/blip2.py` | BLIP-2 captioning (8-bit) + BLIP-2 ITM scorer (BLIP-1 fallback). |
 | `src/rerank.py` | ITM-based re-ranking (`blend` / `itm` / `product` modes). |
-| `train_hn.py` | Hard-neg CLIP fine-tuning. 4060-tuned (batch=8, grad-accum=4). `--seed`, `--suffix`. |
-| `rebuild_indices_hn.py` | Rebuild C-condition HNSW indices for any checkpoint. |
-| `demo_batch_eval.py` | Batch evaluation. `--condition`, `--rerank`, `--yolo`, `--bootstrap N`. |
-| `app.py` | Streamlit demo (upload → YOLO crop → confirm → retrieve → optional rerank). |
-| `kaggle_overnight.ipynb` | Pipeline notebook for Kaggle (full-set ITM eval + multi-seed training). |
-| `run_overnight.sh` | Equivalent shell sequencer for local overnight runs. |
-| `clip-hard-negative-mining.ipynb` | Original research notebook for the hard-neg variant (kept as lab log). |
-| `kernel-metadata.json` | For `kaggle kernels push -p .` CLI workflow. |
+| **`notebooks/` — one notebook per pipeline stage** | |
+| `notebooks/yolo-final-proj.ipynb` | YOLO crop & fine-tuning (yolov8-l, single 'clothing' class, 30 epochs on DeepFashion bbox). |
+| `notebooks/blip2-captioning.ipynb` | BLIP-2 OPT-2.7b 8-bit demo — generates the short product captions used in conditions B and C. |
+| `notebooks/clip-hard-negative-mining.ipynb` | CLIP ViT-L/14 fine-tuning with InfoNCE + Triplet + hard-negative mining (the headline). |
+| `notebooks/blip2-itm.ipynb` | BLIP-2 ITM scoring demo — shows why ITM re-rank hurts on short product captions. |
+| **Docs and figures** | |
+| `report.md` | Final report — full ablation, formulas, results, conclusions. |
+| `figures/` | Loss curves + ablation bar chart (referenced in `report.md`). |
+| `final_proj_statement.txt`, `updates.txt`, `VR-Final-Project.pdf` | Problem statement + prof's clarifications. |
 
 ## Status — what's done
 
@@ -79,14 +86,6 @@ How we handle this in the final results:
 
 `captions.json` covers train + gallery splits (38,494 images) but **not the query split** (14,218 images). That's correct for our pipeline — queries don't need pre-computed captions because we encode them with the visual branch only. If you switch to a query-side text-based scheme, you'd need to caption queries at runtime.
 
-## Open problems / what's pending
-
-- **Ablation table eval** — running locally now (~15 min) for A_alpha1.0, B_alpha0.7, B_alpha0.5, C_alpha0.7, C_alpha0.5, C_alpha0.5_hn. JSONs land in `artifacts/eval_*.json` with bootstrap mean±std.
-- **Third training seed (527)** — was killed by Kaggle's 12 h limit. Decision: report mean±std over seeds 83 + 588 only.
-- **Local hardware quirk** — on this laptop the dGPU mode needs a fresh boot; integrated-GPU mode silently fails (`nvidia-smi` errors with "NVML not available"). Verify with `nvidia-smi` before any GPU-bound run.
-- **Final report draft** — pending the ablation eval results.
-- **Streamlit demo** — implemented end-to-end but not yet user-tested with the hard-neg checkpoint.
-
 ## Setup
 
 ```bash
@@ -97,38 +96,47 @@ Tested with Python 3.13, torch 2.10+cu128 on a single RTX 4060 Laptop (8 GB VRAM
 
 ## Data + checkpoints
 
-Not in this repo (sizes range from 480 KB to 5 GB). Pull from Kaggle:
+Large artifacts (480 KB to 5 GB) are not in this repo. Pull from Kaggle:
 
 ```bash
 kaggle datasets download ashok1145/vr-fproj                 # DeepFashion (extract to vr_final_proj_dataset/)
-kaggle datasets download taralsanka/blip-updated-captions   # captions.json (BLIP-2)
-kaggle datasets download taralsanka/best-yolo-pt            # YOLO weights
+kaggle datasets download taralsanka/blip-updated-captions   # captions.json (BLIP-2 generated)
+kaggle datasets download taralsanka/best-yolo-pt            # YOLO weights (same .pt as notebooks/yolo-final-proj.ipynb produces)
 kaggle datasets download taralsanka/clip-saved-outputs      # Vanilla fine-tuned CLIP + 5 HNSW indices
-kaggle datasets download ashok1145/clip-hn-checkpoint       # Hard-neg fine-tuned CLIP (produced by train_hn.py)
+kaggle datasets download ashok1145/clip-hn-checkpoint       # Hard-neg fine-tuned CLIP
 ```
 
-Place under `artifacts/` and `yolo/` as appropriate.
+Place under `artifacts/` and `yolo/` as appropriate (`src/config.py` shows the expected paths).
 
-## Running locally
+## Running
 
 ```bash
-# Train hard-neg CLIP (default seed 83, ~1 h on 4060)
-python train_hn.py
-# Multi-seed:  python train_hn.py --seed 588 --suffix _seed588
+# Streamlit demo — upload a query image, pick body region, see top-K results
+streamlit run app.py
 
-# Rebuild C-condition HNSW indices with the new checkpoint
-python rebuild_indices_hn.py
+# Batch evaluation (required deliverable) on the headline condition
+python demo_batch_eval.py --condition C_alpha0.7_hn --bootstrap 4
 
-# Batch eval, condition C with hard-neg
-python demo_batch_eval.py --condition C_alpha0.7_hn
-
-# Same with bootstrap mean±std and BLIP-2 ITM rerank
+# Same, with BLIP-2 ITM re-rank (negative result; see report §6.2)
 python demo_batch_eval.py --condition C_alpha0.7_hn --bootstrap 4 \
     --rerank --rerank_mode blend --itm_weight 0.2
 
-# Streamlit demo
-streamlit run app.py
+# Available conditions:
+#   A_alpha1.0, B_alpha0.7, B_alpha0.5,
+#   C_alpha0.7, C_alpha0.5  (vanilla InfoNCE fine-tune),
+#   C_alpha0.7_hn, C_alpha0.5_hn  (hard-neg fine-tune — headline)
 ```
+
+## Reproducing the trained checkpoints
+
+Open and run the corresponding notebook end-to-end on Kaggle (16 GB T4 / P100). Each is self-contained — the only dependency is the `ashok1145/vr-fproj` dataset for DeepFashion.
+
+| Notebook | Output |
+| --- | --- |
+| `notebooks/yolo-final-proj.ipynb` | `yolo_deepfashion_best.pt` → upload as a Kaggle dataset; reference from `src/config.YOLO_WEIGHTS` |
+| `notebooks/blip2-captioning.ipynb` | `captions.json` → upload; reference from `src/config.CAPTIONS_FILE` |
+| `notebooks/clip-hard-negative-mining.ipynb` | `clip_finetuned_hn.pt` + 5 HNSW indices → upload as `ashok1145/clip-hn-checkpoint`; auto-detected by `src/config.CLIP_FT_HN` |
+| `notebooks/blip2-itm.ipynb` | None — demonstrates the BLIP-2 ITM scorer used in the rerank ablation (no checkpoint needed; loads HF model at runtime) |
 
 ## Running on Kaggle
 
