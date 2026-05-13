@@ -31,7 +31,7 @@ This repo is the **viva exhibit**: it shows *what* each pipeline stage does (one
 | `src/rerank.py` | ITM-based re-ranking (`blend` / `itm` / `product` modes). |
 | **`notebooks/` — one notebook per pipeline stage** | |
 | `notebooks/yolo-final-proj.ipynb` | YOLO crop & fine-tuning (yolov8-l, single 'clothing' class, 30 epochs on DeepFashion bbox). |
-| `notebooks/blip2-captioning.ipynb` | BLIP-2 OPT-2.7b 8-bit demo — generates the short product captions used in conditions B and C. |
+| `notebooks/blip2-captioning.ipynb` | BLIP-2 OPT-2.7b (fp16) with the clothing-specific prompt — **this is the notebook that produced the `captions.json` used by every condition with α < 1**. |
 | `notebooks/clip-hard-negative-mining.ipynb` | CLIP ViT-L/14 fine-tuning with InfoNCE + Triplet + hard-negative mining (the headline). |
 | `notebooks/blip2-itm.ipynb` | BLIP-2 ITM scoring demo — shows why ITM re-rank hurts on short product captions. |
 | **Docs and figures** | |
