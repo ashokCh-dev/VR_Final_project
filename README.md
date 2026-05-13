@@ -37,7 +37,6 @@ This repo is the **viva exhibit**: it shows *what* each pipeline stage does (one
 | **Docs and figures** | |
 | `report.md` | Final report — full ablation, formulas, results, conclusions. |
 | `figures/` | Loss curves + ablation bar chart (referenced in `report.md`). |
-| `final_proj_statement.txt`, `updates.txt`, `VR-Final-Project.pdf` | Problem statement + prof's clarifications. |
 
 ## Status — what's done
 
