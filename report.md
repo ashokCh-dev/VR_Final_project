@@ -149,6 +149,21 @@ All numbers are query-bootstrap mean ± std over 4 seeds (resample 80% with repl
 
 > † = 4-seed query bootstrap (single trained model, query subsamples). ‡ = mean ± std over **independent training runs**: 4 for α=0.7 (seeds 83/527/33/588), 3 for α=0.5 (seeds 83/527/33). ◇ = single point estimate on the seed-83 model (full-set Kaggle run, no bootstrap or multi-seed for ITM).
 
+### 6.1.5 α sweep (C-HN, seed 83 model)
+
+Following the α=0.7 vs α=0.5 contrast, we extended the sweep up the α range using the seed-83 C-HN model to see where the optimum lies. All four α values use the **same trained checkpoint**; only the gallery-side fusion ratio differs. Bootstrap mean ± std over 4 query-subsamples.
+
+| α | R@10 (hit) | R@10 (full) | NDCG@10 | mAP@10 |
+| --- | ---: | ---: | ---: | ---: |
+| 0.5  | 0.872 ± 0.004 | 0.549 ± 0.003 | 0.554 ± 0.003 | 0.454 ± 0.003 |
+| 0.7  | 0.881 ± 0.004 | 0.567 ± 0.003 | 0.578 ± 0.004 | 0.479 ± 0.004 |
+| 0.85 | **0.884 ± 0.004** | **0.568 ± 0.003** | **0.581 ± 0.004** | **0.482 ± 0.003** |
+| 0.9  | **0.884 ± 0.004** | **0.569 ± 0.003** | **0.581 ± 0.004** | **0.483 ± 0.004** |
+
+The curve rises from 0.5 → 0.85 then **plateaus**. The 0.85/0.9 gap above 0.7 is tiny (~0.3 pp on R@10, ~0.4 pp on mAP@10) and falls inside the 4-training-seed std (R@10 std = 0.0034 from §6.1), so we cannot call α=0.85 statistically distinct from α=0.7 — but the monotone-then-plateau shape is consistent and matches the noisy-caption hypothesis: more weight on the visual channel helps until the text contribution becomes negligible.
+
+We kept the headline at α=0.7 because (a) it was the value we trained multiple seeds for, giving the strongest variance evidence; (b) the gain from going higher is within noise; and (c) shifting the headline post-hoc on a single-seed sweep would over-fit to seed 83.
+
 > **Seed stability of the headline.** Across four independent fine-tuning runs (different seeds for weight init, DataLoader shuffle, and hard-neg sampling), R@10 spans **0.8785–0.8862** and mAP@10 spans **0.4772–0.4836**. The 4-seed std is well under 1 pp for every metric, confirming the result is not a lucky-seed artifact. Individual per-seed numbers (for transparency):
 >
 > | Seed | R@10 | NDCG@10 | mAP@10 | Where |
@@ -168,7 +183,7 @@ The original research notebook reported impossible mAP values (e.g. mAP@10 = 1.6
 
 **2. Hard-negative mining is consistent but small.** C → C-HN gives a marginal **+0.2 pp R@10 (hit)** (0.879 → 0.881) and **+0.8 pp mAP@10** (0.471 → 0.479) at α = 0.7. At α = 0.5 the pattern repeats (+0.5 pp R@10, +0.9 pp mAP@10). Hard-neg mining is not the main win in this task; the bulk of the improvement comes from contrastive fine-tuning itself.
 
-**3. α = 0.7 beats α = 0.5 across the board.** Wherever the fused vector is used (B and C), giving the visual channel more weight (α = 0.7) outperforms α = 0.5 by 1–2 pp R@10 (hit) and 2–3 pp mAP@10. BLIP-2 captions are short product descriptors that compress lots of catalog images into a small vocabulary, so heavy text weight introduces noise.
+**3. Higher α is better up to ~0.85, then plateaus.** A four-point α sweep on the seed-83 C-HN model (§6.1.5) shows R@10 rising 0.872 → 0.881 → 0.884 → 0.884 as α moves 0.5 → 0.7 → 0.85 → 0.9, then flattening. Captions help (the curve is above the α=1.0 frozen baseline) but the visual channel deserves most of the weight — consistent with BLIP-2 producing short product descriptors that pack many catalog images into a small text vocabulary, so heavy text weight introduces noise.
 
 **4. The hit-rate vs full-Recall gap reveals an in-list ranking problem.** Hit-rate R@10 (0.881) and full R@10 (0.567) differ by a factor of ~1.6× for our headline model. This means we routinely find at least one correct match in top-10 (88% of queries) but recover only ~57% of *all* matches when items have multiple gallery views. The frozen baseline has a ~2.4× ratio (0.569 vs 0.238), so fine-tuning narrows but does not close this gap — most of our remaining mAP headroom is here.
 
