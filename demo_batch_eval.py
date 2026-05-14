@@ -66,8 +66,12 @@ def parse_args():
     p.add_argument("--itm_weight", type=float, default=0.3,
                    help="ITM weight in blend mode (ann_weight = 1 - itm_weight)")
     p.add_argument("--yolo", action="store_true",
-                   help="Use YOLO to crop query images. Default off (uses bbox annotations "
-                        "when --query_dir is the DeepFashion split).")
+                   help="Auto-crop the query image with the Fashionpedia multi-class "
+                        "detector (top-1 whole-garment detection, preferring labels "
+                        "mapped to DeepFashion categories). Default off — uses GT bbox "
+                        "per project update #1. Flag name kept for backward compat; "
+                        "under the hood it now invokes Fashionpedia, not the "
+                        "DeepFashion single-class YOLO.")
     p.add_argument("--max_queries", type=int, default=None,
                    help="Cap on number of queries (for quick smoke tests)")
     p.add_argument("--out", default=None, help="Path to write metrics JSON")
@@ -159,7 +163,10 @@ def main():
     # ── Embed all queries ──
     bbox_map = parse_bbox_file() if not args.yolo else {}
     if args.yolo:
-        from src.yolo_crop import yolo_crop  # lazy: avoids ultralytics startup unless asked
+        # Fashionpedia multi-class detector (loads ~140 MB HF model on first call,
+        # then caches). Returns top-1 garment crop preferring catalog-mapped
+        # labels; falls back to full image if nothing detected.
+        from src.clothing_detect import auto_crop  # lazy import
 
     print("  Encoding queries...")
     q_embs = []
@@ -169,7 +176,7 @@ def main():
         try:
             pil = Image.open(img_path).convert("RGB")
             if args.yolo:
-                pil_crop, _ = yolo_crop(pil)
+                pil_crop, _ = auto_crop(pil)
             else:
                 bbox = bbox_map.get(name)
                 pil_crop = bbox_crop(pil, bbox) if bbox else pil
@@ -238,7 +245,8 @@ def main():
         "condition": args.condition,
         "alpha": alpha,
         "rerank": args.rerank,
-        "yolo": args.yolo,
+        "yolo": args.yolo,  # legacy key — kept for schema compat with old JSONs
+        "detector": "fashionpedia_auto_crop" if args.yolo else "gt_bbox",
         "n_queries": len(q_ids),
         "results": results,
     }

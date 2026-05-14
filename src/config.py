@@ -23,16 +23,19 @@ if IS_KAGGLE:
     CLIP_FT       = _SAVED_DIR / "clip_finetuned.pt"
 
     # Hard-neg checkpoint must be attached as a separate dataset.
-    # We search a few likely slugs (override with HN_CKPT_PATH env var if needed).
+    # Prefer the final-recipe best (seed 83); fall back to the spec-minimum hn.
+    # Override with HN_CKPT_PATH env var if needed.
     _HN_CANDIDATES = [
         os.environ.get("HN_CKPT_PATH"),
+        "/kaggle/input/datasets/ashok1145/clip-hn-checkpoint/clip_finetuned_best.pt",
+        "/kaggle/input/clip-hn-checkpoint/clip_finetuned_best.pt",
         "/kaggle/input/datasets/ashok1145/clip-hn-checkpoint/clip_finetuned_hn.pt",
         "/kaggle/input/clip-hn-checkpoint/clip_finetuned_hn.pt",
         "/kaggle/input/datasets/ashok1145/clip-finetuned-hn/clip_finetuned_hn.pt",
     ]
     CLIP_FT_HN = next(
         (Path(p) for p in _HN_CANDIDATES if p and Path(p).exists()),
-        Path("/kaggle/input/datasets/ashok1145/clip-hn-checkpoint/clip_finetuned_hn.pt"),
+        Path("/kaggle/input/datasets/ashok1145/clip-hn-checkpoint/clip_finetuned_best.pt"),
     )
 
     # Writable working dir
@@ -47,8 +50,12 @@ else:
     ARTIFACTS_DIR = PROJ_ROOT / "artifacts"
     CAPTIONS_FILE = ARTIFACTS_DIR / "captions.json"
     YOLO_WEIGHTS  = PROJ_ROOT / "yolo" / "best_yolo8l.pt"
-    CLIP_FT_HN    = ARTIFACTS_DIR / "clip_finetuned_hn.pt"
-    CLIP_FT       = ARTIFACTS_DIR / "clip_finetuned.pt"
+    # Prefer the final-recipe headline (seed 83) if present; fall back to the
+    # spec-minimum hard-neg checkpoint.
+    _local_best = ARTIFACTS_DIR / "clip_finetuned_best.pt"
+    _local_hn   = ARTIFACTS_DIR / "clip_finetuned_hn.pt"
+    CLIP_FT_HN  = _local_best if _local_best.exists() else _local_hn
+    CLIP_FT     = ARTIFACTS_DIR / "clip_finetuned.pt"
     _READONLY_DIRS = []
 
 IMG_ROOT   = DATASET_ROOT / "img" / "img"

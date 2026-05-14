@@ -51,13 +51,18 @@ This repo is the **viva exhibit**: it shows *what* each pipeline stage does (one
 
 ## Headline numbers (C_alpha0.7_hn, 14,218 queries)
 
-| Metric | Seed 83 | Seed 588 | mean ± std |
-| --- | --- | --- | --- |
-| R@5  | 0.8364 | 0.8386 | 0.8375 ± 0.0011 |
-| R@10 | 0.8796 | 0.8862 | 0.8829 ± 0.0033 |
-| R@15 | 0.9022 | 0.9058 | 0.9040 ± 0.0018 |
-| NDCG@10 | 0.5775 | 0.5823 | 0.5799 ± 0.0024 |
-| mAP@10  | 0.4793 | 0.4836 | 0.4815 ± 0.0022 |
+Recipe: **last 6 vision blocks** unfrozen, **15 epochs**, augmentation on (RandomResizedCrop(0.65–1.0) + HFlip + ColorJitter + RandomPerspective), lr = 2 × 10⁻⁵, λ = 0.35, margin = 0.25, batch = 16. Four independent fine-tuning runs, each evaluated on the full 14,218-query set against a fresh α = 0.7 gallery index built with that seed's checkpoint. Locally reproducible via [`rerun_all_metrics.ipynb`](rerun_all_metrics.ipynb).
+
+| Metric | Seed 33 | Seed 527 | Seed 588 | **Seed 83 (best)** | mean ± std |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| R@5            | 0.8683 | 0.8736 | 0.8721 | **0.8749** | 0.8722 ± 0.0029 |
+| R@10 (hit)     | 0.9067 | 0.9098 | 0.9093 | **0.9123** | 0.9095 ± 0.0023 |
+| R@10 (full)    | 0.6282 | 0.6321 | 0.6339 | **0.6376** | 0.6330 ± 0.0039 |
+| R@15           | 0.9247 | 0.9276 | 0.9264 | **0.9287** | 0.9269 ± 0.0017 |
+| NDCG@10        | 0.6378 | 0.6408 | 0.6435 | **0.6466** | 0.6422 ± 0.0038 |
+| mAP@10         | 0.5450 | 0.5475 | 0.5508 | **0.5540** | 0.5493 ± 0.0039 |
+
+**Recommended headline checkpoint:** seed 83 — tops every metric column. Saved as `artifacts/clip_finetuned_best.pt`. Sibling-seed checkpoints `clip_finetunedFinal_{33,527,588}.pt` reproduce the mean ± std.
 
 ## Known bugs and findings
 

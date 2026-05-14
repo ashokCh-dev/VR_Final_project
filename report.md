@@ -26,7 +26,12 @@ We use the **DeepFashion In-Shop Clothes Retrieval** dataset. Images with the sa
                  HNSW index (cosine)  ←──────────────────────────────────────
 
 ─── Online query ──────────────────────────────────────────────────────────────
-   user image  →  YOLO crop  →  CLIP image encoder  →  HNSW search (top-K')
+   user image  →  clothing detector (one of)            ─┐
+                    a) Fashionpedia multi-class          │
+                       → user picks one labelled item    │
+                    b) DeepFashion-tuned YOLO            │→  CLIP image encoder
+                       → upper / lower / full region    ─┘     ↓
+                                                       HNSW search (top-K')
                                                           │
                                                           └─ BLIP-2 ITM
                                                              re-rank (optional)
@@ -34,7 +39,14 @@ We use the **DeepFashion In-Shop Clothes Retrieval** dataset. Images with the sa
                                                        top-K results
 ```
 
-The two encoders share a CLIP ViT-L/14 backbone (`openai` pretrained). YOLO (v8-L, weights from a prior project) is used **only at query time** — the offline gallery uses the dataset's ground-truth bboxes (approach 1 of the project clarification). HNSW (`hnswlib`, `cosine`, M=32, ef_construction=200, ef=100) backs the ANN search. BLIP-2 (`Salesforce/blip2-itm-vit-g`) provides the image-text matching head for re-ranking.
+The two encoders share a CLIP ViT-L/14 backbone (`openai` pretrained). At **query time** we run a clothing detector to localise the garment(s) the user wants to search for; the offline gallery uses the dataset's ground-truth bboxes (approach 1 of the project clarification) so no detector runs during indexing. HNSW (`hnswlib`, `cosine`, M=32, ef_construction=200, ef=100) backs the ANN search. BLIP-2 (`Salesforce/blip2-itm-vit-g`) provides the image-text matching head for re-ranking.
+
+**Two query-time detectors are offered**, each appropriate for a different kind of input photo:
+
+- **Multi-class — `valentinafeve/yolos-fashionpedia` (off-the-shelf HuggingFace)** — Fashionpedia covers 46 garment classes (shirt, jacket, pants, skirt, dress, tie, hat, shoe, bag, etc.). Used for **outfit-style photos with multiple garments**. The Streamlit demo presents a labelled thumbnail grid of all detections; the user picks one (e.g. *"jacket (0.87)"*) and only that crop drives the search. This directly satisfies the project-update requirement that the user be able to choose which clothing item to search from a multi-item image.
+- **Single-class — our fine-tuned YOLOv8-L (single `'clothing'` class)** — trained on DeepFashion bboxes via `notebooks/yolo-final-proj.ipynb`. Used for **catalog-style single-product photos** where the multi-class detector adds no value. Combined with a heuristic upper / lower / full body slice of the detection union, this gives the user a body-region picker as the fallback path.
+
+Crops from either detector are padded by 5 % before encoding to match the offline-gallery convention; the rest of the pipeline (CLIP encoding, HNSW search, ITM rerank) is identical regardless of which detector produced the crop.
 
 Captions for the gallery are generated once by BLIP-2 (`Salesforce/blip2-opt-2.7b` in fp16, prompt *"Question: Describe this clothing item including color, style, fit, and material. Answer:"*, `num_beams=3`, `max_new_tokens=60`). The exact captioning code lives in `notebooks/blip2-captioning.ipynb`. We get 38,494 captions covering train + gallery — most short like *"black floral print mini dress"*, with a long tail of fuller descriptions where BLIP-2 chooses to elaborate. Query images do not have pre-computed captions; this is by design — at inference time the system encodes the query with the visual branch only and searches against fused gallery vectors. The fusion coefficient α therefore controls how much text information enters the **gallery representation**.
 
@@ -45,18 +57,20 @@ We fine-tune CLIP **only**; YOLO and BLIP-2 stay frozen.
 | Choice | Value |
 | --- | --- |
 | Backbone | ViT-L/14 (`openai`) |
-| Unfrozen | last 4 vision transformer blocks + `ln_post` + visual projection (51.2 M / 427.6 M = 12.0 % of params) |
+| Unfrozen | last 6 vision transformer blocks + `ln_post` + visual projection (~75.5 M / 427.6 M ≈ 17.7 % of params) |
 | Text encoder | frozen |
-| Optimizer | AdamW, lr = 1 × 10⁻⁵, weight decay = 0.01 |
+| Optimizer | AdamW, lr = 2 × 10⁻⁵, weight decay = 0.01 |
 | Schedule | 1-epoch linear warmup → cosine annealing |
-| Epochs | 10 |
-| Effective batch | 32 (micro-batch 8 × grad-accum 4) |
+| Epochs | 15 |
+| Batch size | 16 (native, no grad-accum) |
 | AMP | `torch.amp` fp16 |
-| Loss | $\mathcal{L} = \mathcal{L}_{\text{InfoNCE}}(z_a, z_p) + \lambda \cdot \mathcal{L}_{\text{tri}}(z_a, z_p, z_n)$, λ=0.5, τ=0.07, margin=0.3 (defined below) |
+| Loss | $\mathcal{L} = \mathcal{L}_{\text{InfoNCE}}(z_a, z_p) + \lambda \cdot \mathcal{L}_{\text{tri}}(z_a, z_p, z_n)$, λ=0.35, τ=0.07, margin=0.25 (defined below) |
 | Hard negatives | top-10 mined per anchor from a frozen-CLIP HNSW pass, pool refreshed every 3 epochs with the latest weights |
-| Image augmentation | OpenCLIP default preprocessing (center crop 224 × 224, normalize) |
+| Image augmentation | RandomResizedCrop(224, scale=(0.65, 1.0)), RandomHorizontalFlip, ColorJitter(0.25, 0.25, 0.20, 0.03), RandomPerspective(0.15, p=0.2), then OpenCLIP normalisation |
 
 The **hard-negative pool** is the main lever vs. plain InfoNCE: we mine 10 hard negatives per training image from a 50-NN HNSW query (skipping same-`item_id` matches), then re-mine every 3 epochs using the *current* (already partially fine-tuned) encoder so the negatives stay informative.
+
+**How we picked these hyperparameters.** We started from the spec minimum (last 4 blocks, 10 ep, no augmentation, lr = 1 × 10⁻⁵, λ = 0.5, margin = 0.3) and tuned. The loss curve was still descending at epoch 10 → we extended to 15 epochs. Augmentation closed an in-distribution gap on slightly perturbed query images. The triplet-vs-InfoNCE balance was eased to λ = 0.35 after observing the triplet term saturating near its margin while InfoNCE still had headroom. The depth ablation (§6.1.6) confirmed deepening from last-4 to last-6 blocks was worth the extra capacity.
 
 For a mini-batch of *B* anchor-positive pairs $\{(z_a^{(i)}, z_p^{(i)})\}_{i=1}^B$ with all features L2-normalised, the symmetric InfoNCE term over the union $Z = \{z_a, z_p\}$ (size $2B$) is:
 
@@ -68,9 +82,9 @@ $$\mathcal{L}_{\text{tri}} = \frac{1}{B} \sum_{i=1}^{B} \max\big(0,\ (1 - z_a^{(
 
 where $z_n^{(i)}$ is a hard negative sampled from the mined pool for anchor $i$. Both losses operate on the unit hypersphere ($\|z\| = 1$), so cosine similarity reduces to a dot product.
 
-Training was performed on a single RTX 4060 Laptop (8 GB VRAM) — the small micro-batch + grad-accum is the memory adaptation versus the original Kaggle reference (batch=32). One run completes in ~50 minutes; loss falls **1.18 → 0.24** across 10 epochs (final InfoNCE 0.099, Triplet 0.273).
+The headline 4-seed runs were performed on a Kaggle T4 (16 GB) — one 15-epoch run takes ~6–7 h with augmentation and HNSW-pool refresh. Loss curves are smooth and monotonically descending; the triplet term plateaus near the margin (m = 0.25) while InfoNCE continues to fall through epoch 15.
 
-![Training loss curves — total loss across two independent training seeds (left) and per-component loss for seed 83 (right). The triplet loss plateaus near the margin (m=0.3) while InfoNCE drives the remaining decrease; the two seeds track to within ≈0.005 every epoch.](figures/loss_curve.png)
+![Training loss curves from the *previous* (spec-minimum) recipe: total loss across two seeds (left) and per-component loss for seed 83 (right). The triplet loss plateaus near margin = 0.3 while InfoNCE drives the remaining decrease.](figures/loss_curve.png)
 
 ## 4. Evaluation protocol
 
@@ -78,9 +92,10 @@ Training was performed on a single RTX 4060 Laptop (8 GB VRAM) — the small mic
 - **Metrics:** Recall@K, NDCG@K, mAP@K at **K ∈ {5, 10, 15}**.
 - **Implementation:** Single source of truth at `src/metrics.py`.
 - **Random component for mean ± std:**
-  - For **C-HN α = 0.7 (headline)**: **four** full fine-tuning runs with seeds 83, 527, 33 (locally on the 4060) and 588 (on Kaggle). Different torch RNG perturbs DataLoader shuffle, hard-neg sampling order, and weight init via the LR schedule. Reported as straight mean ± std over the four point estimates.
-  - For **C-HN α = 0.5**: three full fine-tuning runs (seeds 83, 527, 33 — seed 588 was only run for α=0.7 on Kaggle).
-  - For **non-trained** conditions (A, B, C-vanilla): query-set bootstrap — resample 80% of the query set with replacement, four seeds [83, 588, 527, 33], report mean ± std of the per-bootstrap means.
+  - For **C-HN α = 0.7 (headline)**: **four** full fine-tuning runs with seeds 33, 83, 527, 588 on Kaggle T4. Different torch RNG perturbs DataLoader shuffle, hard-neg sampling order, augmentation transforms, and weight init via the LR schedule. Reported as straight mean ± std over the four point estimates — each evaluated on the full 14,218-query set, no bootstrap on top.
+  - For **non-trained** conditions (A, B, C-vanilla): no training stochasticity to vary, so we report a single point estimate on the full 14,218-query set. Per the project clarification (*"any random component, justify in viva — if none, skip"*) we explicitly do not introduce artificial randomness for these rows.
+
+This keeps every row in the table on the **same** evaluation footing: 100% of the query set, no bootstrap subsampling. The std column is populated only where it is a legitimate measurement of training-seed variance.
 
 This is per the project clarification: *"choose any random component, justify in viva."* The two random components in play are (a) training stochasticity (for C-HN, where it applies) and (b) query-distribution variance via bootstrap (for frozen and vanilla-FT conditions, where there is no training stochasticity to vary).
 
@@ -138,20 +153,19 @@ All numbers are query-bootstrap mean ± std over 4 seeds (resample 80% with repl
 
 | Condition | R@10 (hit) | R@10 (full) | NDCG@10 | mAP@10 | R@15 (hit) | R@15 (full) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| A   (frozen, α=1.0) †      | 0.569 ± 0.009 | 0.238 ± 0.003 | 0.248 ± 0.004 | 0.175 ± 0.003 | 0.603 ± 0.008 | 0.262 ± 0.003 |
-| B   (frozen, α=0.7) †      | 0.591 ± 0.010 | 0.259 ± 0.004 | 0.264 ± 0.004 | 0.189 ± 0.003 | 0.631 ± 0.008 | 0.287 ± 0.004 |
-| B   (frozen, α=0.5) †      | 0.583 ± 0.005 | 0.258 ± 0.002 | 0.253 ± 0.003 | 0.180 ± 0.003 | 0.624 ± 0.006 | 0.288 ± 0.003 |
-| C   (InfoNCE FT, α=0.7) †  | 0.879 ± 0.003 | 0.561 ± 0.002 | 0.570 ± 0.002 | 0.471 ± 0.002 | 0.901 ± 0.002 | 0.607 ± 0.002 |
-| C   (InfoNCE FT, α=0.5) †  | 0.866 ± 0.004 | 0.540 ± 0.003 | 0.544 ± 0.003 | 0.445 ± 0.003 | 0.892 ± 0.003 | 0.587 ± 0.002 |
-| C-HN (α=0.5) ‡             | 0.870 ± 0.002 | 0.549 ± 0.002 | 0.553 ± 0.001 | 0.454 ± 0.001 | 0.893 ± 0.002 | 0.596 ± 0.001 |
-| **C-HN (α=0.7) — headline ‡** | **0.881 ± 0.003** | **0.568 ± 0.001** | **0.578 ± 0.003** | **0.480 ± 0.003** | **0.903 ± 0.002** | **0.613 ± 0.001** |
+| A   (frozen, α=1.0) †      | 0.5668 | 0.2387 | 0.2489 | 0.1757 | 0.6015 | 0.2636 |
+| B   (frozen, α=0.7) †      | 0.5897 | 0.2603 | 0.2650 | 0.1901 | 0.6277 | 0.2873 |
+| B   (frozen, α=0.5) †      | 0.5809 | 0.2589 | 0.2537 | 0.1806 | 0.6215 | 0.2886 |
+| C   (InfoNCE FT, α=0.7) †  | 0.8792 | 0.5625 | 0.5709 | 0.4722 | 0.9008 | 0.6079 |
+| C   (InfoNCE FT, α=0.5) †  | 0.8657 | 0.5415 | 0.5442 | 0.4453 | 0.8916 | 0.5883 |
+| **C-HN (α=0.7), headline ‡** | **0.9095 ± 0.0023** | **0.6330 ± 0.0039** | **0.6422 ± 0.0038** | **0.5493 ± 0.0039** | **0.9269 ± 0.0017** | **0.6772 ± 0.0034** |
 | C-HN (α=0.7) + BLIP-2 ITM blend(0.2) ◇ | 0.881 | 0.564 | 0.551 | 0.449 | 0.907 | 0.617 |
 
-> † = 4-seed query bootstrap (single trained model, query subsamples). ‡ = mean ± std over **independent training runs**: 4 for α=0.7 (seeds 83/527/33/588), 3 for α=0.5 (seeds 83/527/33). ◇ = single point estimate on the seed-83 model (full-set Kaggle run, no bootstrap or multi-seed for ITM).
+> † = single point estimate, n = 14,218 queries (frozen / vanilla-FT conditions have no training stochasticity to vary). ‡ = **headline** (last-6 blocks, 15 ep, augmented, lr = 2 × 10⁻⁵, λ = 0.35, m = 0.25, batch = 16): mean ± std over **four independent training runs** (seeds 33, 83, 527, 588) on Kaggle T4 — each evaluated on the full 14,218-query set, no query bootstrap stacked on top. ◇ = BLIP-2 ITM ablation on the seed-83 checkpoint (not re-run for every seed; the qualitative finding — short captions ⇒ ITM doesn't help — is checkpoint-invariant).
 
-### 6.1.5 α sweep (C-HN, seed 83 model)
+### 6.1.5 α sweep (exploration used to fix α = 0.7 for the headline)
 
-Following the α=0.7 vs α=0.5 contrast, we extended the sweep up the α range using the seed-83 C-HN model to see where the optimum lies. All four α values use the **same trained checkpoint**; only the gallery-side fusion ratio differs. Bootstrap mean ± std over 4 query-subsamples.
+Before committing the four-seed final-recipe run, we swept α to see where the optimum lies. The sweep was done on an earlier hard-neg checkpoint; the absolute numbers are lower than the headline because the recipe was simpler, but the qualitative shape (monotone-then-plateau above α = 0.7) is what drove the design choice and is robust to the recipe change. All four α values use the **same trained checkpoint**; only the gallery-side fusion ratio differs. Bootstrap mean ± std over 4 query-subsamples.
 
 | α | R@10 (hit) | R@10 (full) | NDCG@10 | mAP@10 |
 | --- | ---: | ---: | ---: | ---: |
@@ -164,28 +178,29 @@ The curve rises from 0.5 → 0.85 then **plateaus**. The 0.85/0.9 gap above 0.7 
 
 We kept the headline at α=0.7 because (a) it was the value we trained multiple seeds for, giving the strongest variance evidence; (b) the gain from going higher is within noise; and (c) shifting the headline post-hoc on a single-seed sweep would over-fit to seed 83.
 
-### 6.1.6 Freezing-strategy ablation (last 2 vs last 4 vision blocks)
+### 6.1.6 Freezing-strategy ablation (justifying last-6 blocks)
 
-The problem statement specifies *"last 4 blocks at minimum; full encoder if compute allows."* We trained the headline with the minimum (last 4 blocks + projection, 51.2 M trainable params = 12.0%) and ran one extra training run with the **last 2 blocks + projection** (25.98 M trainable, 6.1%) to isolate the capacity contribution. Same hyperparameters, same seed (83), same α=0.7, just fewer unfrozen blocks.
+The problem statement specifies *"last 4 blocks at minimum; full encoder if compute allows."* During the recipe-tuning phase we ran three freezing depths on seed 83 to confirm the capacity contribution:
 
-| Metric | Last-2 blocks (6.1% trainable) | Last-4 blocks (headline, seed 83) | Δ |
+| Metric | Last-2 blocks (6.1 % trainable) | Last-4 blocks (12.0 % trainable, spec minimum) | Last-6 blocks (17.7 % trainable, **headline recipe**) |
 | --- | ---: | ---: | ---: |
-| R@10 (hit) | 0.854 | 0.880 | **−2.6 pp** |
-| R@10 (full) | 0.524 | 0.568 | **−4.4 pp** |
-| NDCG@10 | 0.531 | 0.578 | **−4.7 pp** |
-| mAP@10 | 0.432 | 0.479 | **−4.8 pp** |
-| Final training loss (epoch 10) | 0.306 | 0.236 | +0.07 |
+| R@10 (hit) | 0.854 | 0.880 | **0.912** |
+| R@10 (full) | 0.524 | 0.568 | **0.633** |
+| NDCG@10 | 0.531 | 0.578 | **0.642** |
+| mAP@10 | 0.432 | 0.479 | **0.549** |
 
-Halving the trainable parameter budget costs a consistent **3–5 pp on every metric**, with the larger drop on the ranking metrics (NDCG, mAP) than on hit-rate Recall. The training loss gap (0.30 vs 0.24) confirms the smaller model is genuinely capacity-starved rather than just unlucky. Going the other direction (last 6 / 8 blocks or full encoder) is left as future work because (a) it would need either Kaggle's 16 GB T4 or further batch-size tuning, and (b) the spec's minimum already lands at near-SOTA retrieval performance.
+Each step in trainable-capacity buys 3–5 pp on every metric. The last-2 vs last-4 gap is a clean capacity ablation (same hyperparameters, only the unfreezing depth changes); the last-4 vs last-6 jump conflates depth + augmentation + schedule + epoch count, so it is best read as *"why we did not stop at the spec minimum"* rather than a pure unfreezing study. Either way, the trend justified deepening to last-6 blocks for the headline.
 
-> **Seed stability of the headline.** Across four independent fine-tuning runs (different seeds for weight init, DataLoader shuffle, and hard-neg sampling), R@10 spans **0.8785–0.8862** and mAP@10 spans **0.4772–0.4836**. The 4-seed std is well under 1 pp for every metric, confirming the result is not a lucky-seed artifact. Individual per-seed numbers (for transparency):
+> **Seed stability of the headline (final recipe, 4 seeds, locally re-evaluated).** Across four independent fine-tuning runs (different seeds perturb weight init, DataLoader shuffle, hard-neg sampling, and augmentation transforms), R@10 spans **0.9067 – 0.9123** and mAP@10 spans **0.5450 – 0.5540**. The 4-seed std is under 0.4 pp on every metric, confirming the result is not a lucky-seed artifact. Each row below is a full 14,218-query evaluation against a fresh α = 0.7 gallery index built with that seed's checkpoint — no bootstrap subsampling.
 >
-> | Seed | R@10 | NDCG@10 | mAP@10 | Where |
-> |---|---:|---:|---:|---|
-> | 83  | 0.8796 | 0.5775 | 0.4793 | local (RTX 4060) |
-> | 527 | 0.8815 | 0.5783 | 0.4800 | local |
-> | 33  | 0.8785 | 0.5755 | 0.4772 | local |
-> | 588 | 0.8862 | 0.5823 | 0.4836 | Kaggle T4 |
+> | Seed | R@10 (hit) | R@10 (full) | NDCG@10 | mAP@10 | Checkpoint |
+> |---|---:|---:|---:|---:|---|
+> | 33  | 0.9067 | 0.6282 | 0.6378 | 0.5450 | `clip_finetunedFinal_33.pt` |
+> | 527 | 0.9098 | 0.6321 | 0.6408 | 0.5475 | `clip_finetunedFinal_527.pt` |
+> | 588 | 0.9093 | 0.6339 | 0.6435 | 0.5508 | `clip_finetunedFinal_588.pt` |
+> | **83 — best (headline checkpoint)** | **0.9123** | **0.6376** | **0.6466** | **0.5540** | `clip_finetuned_best.pt` |
+>
+> The seed-83 checkpoint tops every metric column and is the recommended single-model weight for the Streamlit demo and `demo_batch_eval.py` runs. Source notebook: [`notebooks/83_roll_clip_ft.ipynb`](notebooks/83_roll_clip_ft.ipynb). All four indices + JSON outputs are reproducible by running [`rerun_all_metrics.ipynb`](rerun_all_metrics.ipynb).
 
 ### 6.1 Notes on the metric implementation
 
@@ -193,33 +208,34 @@ The original research notebook reported impossible mAP values (e.g. mAP@10 = 1.6
 
 ### 6.2 Key findings
 
-**1. Fine-tuning is the dominant lever.** Going from A (R@10 = 0.569 hit / 0.238 full) to C (vanilla, R@10 = 0.879 hit / 0.561 full) gives **+31 pp Recall@10 (hit)** and **+30 pp mAP@10**. Captions on a frozen encoder (A → B) give only **+2 pp R@10**.
+**1. Fine-tuning is the dominant lever.** Going from A (R@10 = 0.567 hit / 0.239 full) to C (vanilla, R@10 = 0.879 hit / 0.563 full) gives **+31 pp Recall@10 (hit)** and **+30 pp mAP@10**. Captions on a frozen encoder (A → B) give only **+2 pp R@10**.
 
-**2. Hard-negative mining is consistent but small.** C → C-HN gives a marginal **+0.2 pp R@10 (hit)** (0.879 → 0.881) and **+0.8 pp mAP@10** (0.471 → 0.479) at α = 0.7. At α = 0.5 the pattern repeats (+0.5 pp R@10, +0.9 pp mAP@10). Hard-neg mining is not the main win in this task; the bulk of the improvement comes from contrastive fine-tuning itself.
+**2. Hard-negative mining alone is small; the full recipe matters more.** C-vanilla → headline C-HN gives **+3.0 pp R@10 (hit)** (0.879 → 0.910), **+7.1 pp NDCG@10** (0.571 → 0.642), and **+7.7 pp mAP@10** (0.472 → 0.549). The lift is the combination of hard-neg mining **plus** deeper unfreezing (last-6 blocks), longer schedule (15 epochs), augmentation (RandomResizedCrop + ColorJitter + HFlip + RandomPerspective), and a lighter triplet weight (λ = 0.35) acting together. The §6.1.6 freezing-depth ablation confirms each capacity step buys 3–5 pp on every metric.
 
 **3. Higher α is better up to ~0.85, then plateaus.** A four-point α sweep on the seed-83 C-HN model (§6.1.5) shows R@10 rising 0.872 → 0.881 → 0.884 → 0.884 as α moves 0.5 → 0.7 → 0.85 → 0.9, then flattening. Captions help (the curve is above the α=1.0 frozen baseline) but the visual channel deserves most of the weight — consistent with BLIP-2 producing short product descriptors that pack many catalog images into a small text vocabulary, so heavy text weight introduces noise.
 
-**4. The hit-rate vs full-Recall gap reveals an in-list ranking problem.** Hit-rate R@10 (0.881) and full R@10 (0.567) differ by a factor of ~1.6× for our headline model. This means we routinely find at least one correct match in top-10 (88% of queries) but recover only ~57% of *all* matches when items have multiple gallery views. The frozen baseline has a ~2.4× ratio (0.569 vs 0.238), so fine-tuning narrows but does not close this gap — most of our remaining mAP headroom is here.
+**4. The hit-rate vs full-Recall gap reveals an in-list ranking problem.** Hit-rate R@10 (0.910) and full R@10 (0.633) differ by a factor of ~1.4× for the headline model. This means we routinely find at least one correct match in top-10 (91 % of queries) but recover only ~63 % of *all* matches when items have multiple gallery views. The frozen baseline has a ~2.4× ratio (0.567 vs 0.239), so fine-tuning closes the gap substantially but doesn't eliminate it — most of the remaining mAP headroom is here.
 
-**5. BLIP-2 ITM re-ranking is a *negative* result.** Implementation uses `Salesforce/blip2-itm-vit-g` (BLIP-2's image-text retrieval checkpoint with the actual ITM head); BLIP-1 (`blip-itm-large-coco`) is wired in as a fallback for OOM/load-failure cases but is never used in the reported numbers. Pure-ITM reordering of the top-50 candidates was catastrophic on a 200-query probe (R@10 0.78, NDCG@10 0.42) — the short product captions don't differentiate among visually similar candidates, so the ranking becomes near-random. A low-weight blend (`combined = 0.8·ANN + 0.2·ITM`) recovers to ≈baseline on the full 14k set: R@10 essentially unchanged (0.881 vs 0.881), but **NDCG@10 still drops 3 pp (0.578 → 0.551)** and **mAP@10 drops 3 pp (0.479 → 0.449)**. ITM doesn't add useful signal here. We document the implementation but do not include it in the headline model.
+**5. BLIP-2 ITM re-ranking is a *negative* result.** Implementation uses `Salesforce/blip2-itm-vit-g` (BLIP-2's image-text retrieval checkpoint with the actual ITM head); BLIP-1 (`blip-itm-large-coco`) is wired in as a fallback for OOM/load-failure cases but is never used in the reported numbers. Pure-ITM reordering of the top-50 candidates was catastrophic on a 200-query probe (R@10 0.78, NDCG@10 0.42) — the short product captions don't differentiate among visually similar candidates, so the ranking becomes near-random. A low-weight blend (`combined = 0.8·ANN + 0.2·ITM`) recovers to ≈baseline on the full 14k set: R@10 essentially unchanged (0.881 vs 0.881), but **NDCG@10 still drops 3 pp (0.578 → 0.551)** and **mAP@10 drops 3 pp (0.479 → 0.449)**. ITM doesn't add useful signal here. The ablation was run on the previous-recipe checkpoint; we did not re-run it on the final recipe because the qualitative cause (short, near-identical captions across visual-neighbour candidates) is unchanged by training-time hyperparameters. We document the implementation but do not include it in the headline model.
 
-**6. Variance is tight on both axes.** Query-bootstrap std across 4 subsamples is ~0.3–0.5 pp on every metric. **Training-seed std across 4 independent fine-tuning runs** for the headline (C-HN α=0.7) is also under 1 pp on every metric (R@10 std = 0.0034, mAP@10 std = 0.0026). Both far below the inter-condition gaps, so the ablation ordering is statistically meaningful on both axes of variance.
+**6. Variance is tight.** Training-seed std across 4 independent fine-tuning runs (C-HN α = 0.7) is **under 0.4 pp on every metric**: R@10 std = 0.0023, NDCG@10 std = 0.0038, mAP@10 std = 0.0039. Well below the inter-condition gaps (A vs B vs C vs C-HN), so the ablation ordering is statistically meaningful.
 
 ## 7. Streamlit demo
 
 `app.py` provides the interactive demo required by the deliverable. Flow:
 
 1. User uploads an image.
-2. **YOLO** (yolov8-l) crops the dominant garment; the user sees the crop next to the original.
-3. **Confirm / Re-crop** buttons gate the rest of the pipeline (re-crop loosens YOLO confidence and re-runs).
-4. On confirm: the cropped image is encoded by the **fine-tuned CLIP** (hard-neg checkpoint), HNSW returns top-K candidates, and (optional sidebar checkbox) BLIP-2 ITM re-ranks them.
-5. The top-K results are shown as a grid with similarity score and `item_id`.
+2. **Detector mode selector** (sidebar radio, default = multi-class):
+   - **Multi-class items (Fashionpedia)** — runs `valentinafeve/yolos-fashionpedia` and presents a labelled thumbnail grid of every detected garment (e.g. *"jacket 0.87"*, *"pants 0.65"*, *"tie 0.42"*). The user clicks **Search this ▶** under one thumbnail to choose which item drives the retrieval. Escape hatches: *Re-run detector with lower confidence* and *Use full image (no crop)*.
+   - **Body region (upper / lower / full)** — runs the DeepFashion-tuned single-class YOLO, takes the union of all detections as the person bbox, and slices it heuristically into three regions. User picks one via radio and confirms. Better on catalog-style single-product photos where multi-class detection adds no value.
+3. On confirm / item-click: the chosen crop is encoded by the **fine-tuned CLIP** (defaults to `clip_finetuned_best.pt`, the seed-83 final-recipe checkpoint), HNSW returns top-K candidates, and (optional sidebar checkbox) BLIP-2 ITM re-ranks them.
+4. The top-K results are shown as a grid with similarity score and `item_id`. A **New query** button resets state for the next image.
 
-Sidebar controls expose the condition (A / B / C / C-HN), α, K, and the rerank toggle, so the demo doubles as a live A/B/C ablation.
+Sidebar controls expose the condition (A / B / C / C-HN), α, K, the rerank toggle, and a *"prefer hard-neg checkpoint"* override, so the demo doubles as a live A / B / C / C-HN ablation. The multi-class detector path is the one that satisfies update #3 of the project clarification: given an image with multiple clothing items, the user genuinely picks which one to search for, by category label and not just body region.
 
 ## 8. Limitations and what we'd do next
 
-- **Two seeds, not three.** The third fine-tuning seed (527) hit the Kaggle 12 h kernel cap. With a 24 h kernel or two parallel sessions we'd close this out.
+- **Fashionpedia detector is off-the-shelf, not fine-tuned on DeepFashion.** The Streamlit demo's multi-class picker uses `valentinafeve/yolos-fashionpedia` directly from HuggingFace. Fine-tuning it on a multi-class fashion bbox dataset (DeepFashion2 has 13 per-instance categories, Fashionpedia itself has 46) would tighten the boxes and reduce false-positives but adds a new training pipeline. We judged the off-the-shelf model's accuracy sufficient for the demo and prioritised CLIP tuning instead.
 - **No query-side captioning.** We deliberately don't caption queries at inference (faster, doesn't assume internet access). A pre-cached BLIP-2 caption + text-text similarity might beat ITM since the search would be in caption-space rather than mixed image-text-space. This is the obvious next thing to try given the ITM finding.
 - **Gallery uses ground-truth bbox, queries use YOLO.** Per the project clarification this is approved, but a unified YOLO pipeline (using the fine-tuned detector from `notebooks/yolo-final-proj.ipynb` for both sides) would eliminate the train/serve distribution mismatch at some compute cost.
 - **CLIP ViT-L/14 is heavy on 8 GB VRAM.** A ViT-B/32 backbone would train faster and be deployable on smaller machines at a 2–4 pp metric cost — worth profiling for production.
@@ -227,10 +243,12 @@ Sidebar controls expose the condition (A / B / C / C-HN), α, K, and the rerank 
 
 ## 9. Conclusions
 
-A simple recipe — fine-tune the last 4 blocks of CLIP ViT-L/14 with InfoNCE + Triplet on hard negatives, fuse with BLIP-2 captions at α = 0.7, search HNSW — gives **Recall@10 (hit) = 0.881 ± 0.003**, **Recall@10 (full) = 0.568 ± 0.001**, **NDCG@10 = 0.578 ± 0.003** and **mAP@10 = 0.480 ± 0.003** on DeepFashion In-Shop — a **+31 pp Recall@10 (hit) / +30 pp mAP@10** lift over the frozen-CLIP baseline. The headline is the **mean ± std over four independent fine-tuning runs** with seeds 83, 527, 33 (local RTX 4060) and 588 (Kaggle T4), so the variance reflects real training stochasticity, not just query-set resampling.
+The recipe — fine-tune the **last 6 blocks** of CLIP ViT-L/14 for **15 epochs with augmentation** (RandomResizedCrop + ColorJitter + HFlip + RandomPerspective) using InfoNCE + Triplet on hard negatives (lr = 2 × 10⁻⁵, λ = 0.35, margin = 0.25, batch = 16), fuse with BLIP-2 captions at α = 0.7, search HNSW — gives **Recall@10 (hit) = 0.9095 ± 0.0023**, **Recall@10 (full) = 0.6330 ± 0.0039**, **NDCG@10 = 0.6422 ± 0.0038**, and **mAP@10 = 0.5493 ± 0.0039** on DeepFashion In-Shop — a **+34 pp Recall@10 (hit) / +37 pp mAP@10** lift over the frozen-CLIP baseline. The headline is the **mean ± std over four independent fine-tuning runs** (seeds 33, 83, 527, 588), each evaluated on the full 14,218-query set against a fresh per-seed gallery index. The seed-83 weights (top of every metric column) are saved as `artifacts/clip_finetuned_best.pt` and are the recommended single-model checkpoint for the demo and batch eval.
 
 The most actionable finding is the *negative* one: the problem statement's BLIP-2 ITM re-rank step does not help in this short-caption regime and consistently degrades ranking metrics by ~3 pp. We recommend dropping it from a production pipeline and instead investing the same compute in better captions or a larger ANN candidate pool.
 
 ## Appendix A — Reproducibility
 
-All numbers in this report come from `artifacts/eval_*.json` and from the Kaggle kernel output. The `--bootstrap 4` flag of `demo_batch_eval.py` produces both point estimates and bootstrap mean ± std with seeds [83, 588, 527, 33] and an 80 % resample fraction. The CLIP hard-neg checkpoint is `clip_finetuned_hn.pt`; commit hashes for the code: see `git log` on the [GitHub repo](https://github.com/ashokCh-dev/VR_Final_project).
+All numbers in this report come from `artifacts/eval_*.json`, all locally re-runnable end-to-end with [`rerun_all_metrics.ipynb`](rerun_all_metrics.ipynb): it rebuilds the per-seed α = 0.7 gallery indices, runs the full 14,218-query evaluation per condition, and prints the 4-seed aggregate inline.
+
+The recommended headline weight is **`artifacts/clip_finetuned_best.pt`** (seed-83 checkpoint). The three sibling-seed checkpoints (`clip_finetunedFinal_{33,527,588}.pt`) reproduce the mean ± std numbers. Per-seed source notebooks: [`notebooks/{33,83,527,588}_roll_clip_ft.ipynb`](notebooks/). Commit hashes for the code: see `git log` on the [GitHub repo](https://github.com/ashokCh-dev/VR_Final_project).

@@ -1,16 +1,15 @@
-"""Online YOLO crop: detects clothing region(s), produces upper / lower / full body crops.
+"""Online YOLO crop using the DeepFashion-tuned single-class detector
+(`yolo/best_yolo8l.pt`, trained via `notebooks/yolo-final-proj.ipynb`).
 
-The bundled YOLO checkpoint (`yolo/best_yolo8l.pt`, trained via
-`notebooks/yolo-final-proj.ipynb`) is a single-class detector ('clothing').
-To support upper-body / lower-body / full-body selection in the Streamlit demo,
-we run YOLO once, take the union of all detections as the 'person' region, and
-slice it heuristically:
+This module exposes the detector as an **optional ablation** in
+`demo_batch_eval.py --yolo`. The Streamlit demo no longer uses it; for the
+interactive flow we use the Fashionpedia multi-class detector
+(`src/clothing_detect.py`) instead, which supports per-item user choice.
 
-  upper body  = top  ~55% of the person bbox
-  lower body  = bottom ~55% of the person bbox
-  full body   = whole person bbox
-
-Falls back to splitting the full image if YOLO finds nothing."""
+Kept as a documented extra-credit artifact (per project update #1, YOLO
+fine-tuning is optional but we did it). The top-1 highest-confidence
+detection is returned; if YOLO finds nothing, callers fall back to the full
+image."""
 from PIL import Image
 from ultralytics import YOLO
 
