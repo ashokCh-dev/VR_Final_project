@@ -68,7 +68,7 @@ condition = st.sidebar.selectbox(
     help="A=vision-only, B=frozen+captions, C=fine-tuned+captions, _hn=hard-neg model",
 )
 detect_conf = st.sidebar.slider(
-    "Detector confidence", 0.05, 0.6, 0.25, 0.05,
+    "Detector confidence", 0.05, 0.6, 0.50, 0.05,
     help="Lower → more candidate detections; higher → only confident ones.",
 )
 show_parts = st.sidebar.checkbox(
@@ -146,10 +146,15 @@ if st.session_state["original_pil"] is not None and not st.session_state["confir
 
     if st.session_state["detected_items"] is None:
         with st.spinner("Running Fashionpedia detector…"):
-            items = detect_items(
+            raw_items = detect_items(
                 st.session_state["original_pil"], conf=detect_conf,
                 include_parts=show_parts,
             )
+        # Hide detections that have no DeepFashion catalog equivalent (hats,
+        # glasses, shoes, bags, ties, watches, belts, scarves, …). Same
+        # rationale as filtering parts: there is nothing to retrieve for
+        # those classes, so showing them is just noise for the user.
+        items = [it for it in raw_items if is_in_catalog(it["label"])]
         st.session_state["detected_items"] = items
 
     items = st.session_state["detected_items"]
@@ -162,22 +167,15 @@ if st.session_state["original_pil"] is not None and not st.session_state["confir
     with c_grid:
         if not items:
             st.warning(
-                "No clothing items detected above the confidence threshold. "
-                "Try lowering the detector confidence in the sidebar, enable "
-                "*Show garment parts* to see partial detections, or click "
-                "**Use full image (no crop)** below."
+                "No catalog-mapped clothing items detected. Try lowering the "
+                "detector confidence in the sidebar, or click **Use full "
+                "image (no crop)** below to search on the whole image."
             )
         else:
-            n_searchable = sum(1 for it in items if is_in_catalog(it["label"]))
-            n_oos = len(items) - n_searchable
-            msg = (
+            st.success(
                 f"Detected {len(items)} item{'s' if len(items) != 1 else ''}. "
-                f"{n_searchable} searchable in the DeepFashion catalog"
+                "Click one to retrieve."
             )
-            if n_oos:
-                msg += f"; {n_oos} marked out-of-stock (accessories, no equivalent in gallery)"
-            msg += ". Click a searchable one to retrieve."
-            st.success(msg)
 
             cols_per_row = 4
             rows = (len(items) + cols_per_row - 1) // cols_per_row
@@ -189,47 +187,37 @@ if st.session_state["original_pil"] is not None and not st.session_state["confir
                         break
                     it = items[i]
                     thumb = crop_item(st.session_state["original_pil"], it)
-                    in_cat = is_in_catalog(it["label"])
                     with cols[j]:
                         st.image(thumb, use_container_width=True)
-                        label_disp = f"**{it['label']}**  ({it['score']:.2f})"
-                        if in_cat:
-                            cats = catalog_categories(it["label"])
-                            st.caption(label_disp + f"\n\n_in catalog: {', '.join(cats)}_")
-                            if st.button(f"Search this  ▶", key=f"pick_{i}"):
-                                st.session_state["selected_item"] = it
-                                st.session_state["query_crop"] = crop_item(
-                                    st.session_state["original_pil"], it
-                                )
-                                st.session_state["query_label"] = (
-                                    f"{it['label']} ({it['score']:.2f})"
-                                )
-                                st.session_state["confirmed"] = True
-                                st.session_state["results"] = None
-                                st.rerun()
-                        else:
-                            st.caption(label_disp + "\n\n:gray[**Not in catalog (out of stock)**]")
-                            st.button(
-                                "Not stocked",
-                                key=f"pick_{i}",
-                                disabled=True,
-                                help=(
-                                    f"DeepFashion In-Shop gallery has no "
-                                    f"'{it['label']}' items — accessories "
-                                    "(hats, glasses, shoes, bags, ties, …) "
-                                    "are out of catalogue scope."
-                                ),
+                        cats = catalog_categories(it["label"])
+                        st.caption(
+                            f"**{it['label']}**  ({it['score']:.2f})"
+                            + f"\n\n_in catalog: {', '.join(cats)}_"
+                        )
+                        if st.button(f"Search this  ▶", key=f"pick_{i}"):
+                            st.session_state["selected_item"] = it
+                            st.session_state["query_crop"] = crop_item(
+                                st.session_state["original_pil"], it
                             )
+                            st.session_state["query_label"] = (
+                                f"{it['label']} ({it['score']:.2f})"
+                            )
+                            st.session_state["confirmed"] = True
+                            st.session_state["results"] = None
+                            st.rerun()
 
     b1, b2 = st.columns(2)
-    if b1.button("Re-run detector with lower confidence"):
-        with st.spinner("Re-running detector…"):
-            items = detect_items(
+    if b1.button("Re-run detector"):
+        with st.spinner("Re-running detector with current sidebar settings…"):
+            raw_items = detect_items(
                 st.session_state["original_pil"],
-                conf=max(0.05, detect_conf - 0.10),
+                conf=detect_conf,
                 include_parts=show_parts,
             )
-        st.session_state["detected_items"] = items
+        # Same catalog filter as the first-time run.
+        st.session_state["detected_items"] = [
+            it for it in raw_items if is_in_catalog(it["label"])
+        ]
         st.rerun()
     if b2.button("Use full image (no crop)"):
         st.session_state["query_crop"] = st.session_state["original_pil"]
