@@ -118,7 +118,47 @@ def _load():
     return _processor, _model
 
 
-def detect_items(pil_image, conf=0.30, max_items=8, include_parts=False):
+def _iou(box_a, box_b):
+    """Intersection-over-union for two (x1, y1, x2, y2) boxes. Returns 0 if
+    either box is degenerate."""
+    ax1, ay1, ax2, ay2 = box_a
+    bx1, by1, bx2, by2 = box_b
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+    inter_w = max(0, inter_x2 - inter_x1)
+    inter_h = max(0, inter_y2 - inter_y1)
+    inter = inter_w * inter_h
+    area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+    area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
+    union = area_a + area_b - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _per_class_nms(items, iou_thresh=0.5):
+    """Per-class non-max suppression. Items must already be sorted by
+    descending confidence. Drops any detection whose IoU with a *kept*
+    detection of the same class exceeds `iou_thresh`.
+
+    This deduplicates overlapping boxes for the same garment (which the
+    Fashionpedia detector often emits at multiple scales) without killing
+    genuinely separate instances (e.g. two distinct jackets in a group
+    photo, where the boxes don't overlap)."""
+    kept = []
+    for it in items:
+        skip = False
+        for k in kept:
+            if k["label"] == it["label"] and _iou(k["bbox"], it["bbox"]) > iou_thresh:
+                skip = True
+                break
+        if not skip:
+            kept.append(it)
+    return kept
+
+
+def detect_items(pil_image, conf=0.30, max_items=8, include_parts=False,
+                 nms_iou=0.5):
     """Run Fashionpedia detector. Returns a list of detection dicts sorted by
     descending confidence:
 
@@ -129,6 +169,11 @@ def detect_items(pil_image, conf=0.30, max_items=8, include_parts=False):
     labels (ruffle, bow, sequin, …) are filtered out because they don't
     correspond to anything retrievable in the DeepFashion gallery. Pass
     `include_parts=True` to disable the filter and inspect raw detections.
+
+    Per-class NMS (`nms_iou`, default 0.5) deduplicates overlapping boxes for
+    the same garment at multiple scales without killing genuine multi-instance
+    detections (different garments in distinct image regions are all kept).
+    Set `nms_iou=1.0` to disable.
 
     Empty list if nothing scores above `conf` (after filtering)."""
     if not isinstance(pil_image, Image.Image):
@@ -159,6 +204,10 @@ def detect_items(pil_image, conf=0.30, max_items=8, include_parts=False):
             }
         )
     items.sort(key=lambda d: d["score"], reverse=True)
+
+    if nms_iou < 1.0:
+        items = _per_class_nms(items, iou_thresh=nms_iou)
+
     return items[:max_items]
 
 

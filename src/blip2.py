@@ -1,9 +1,19 @@
-"""BLIP-2 captioning + BLIP-1 ITM (image-text matching) for re-ranking.
+"""BLIP-2 captioning + BLIP-2 ITM (image-text matching) for re-ranking.
 
-We use BLIP-1 ITM for re-ranking because BLIP-2 doesn't expose a clean ITM head
-on its public checkpoints; BLIP-1 ITM is the standard substitute in retrieval
-papers. BLIP-2 (8-bit, opt-2.7b) is used only for caption generation of user
-queries at inference time.
+Re-ranking uses `Salesforce/blip2-itm-vit-g` via Hugging Face's
+`Blip2ForImageTextRetrieval` (transformers >= 4.41), which exposes BLIP-2's
+genuine ITM head through `use_image_text_matching_head=True`. This is what
+the reported numbers in the project report were computed with.
+
+BLIP-1 (`Salesforce/blip-itm-large-coco`) is wired in as an automatic fallback
+only when the BLIP-2 loader raises (out-of-memory, missing checkpoint, or
+older transformers version that lacks `Blip2ForImageTextRetrieval`). When
+that happens the loader prints `[blip2] BLIP-2 ITM failed to load (...);
+falling back to BLIP-1.` so it's visible in logs.
+
+Captioning (offline, one-time) uses BLIP-2 OPT-2.7b in 8-bit / fp16 — see
+`notebooks/blip2-captioning.ipynb` for the actual caption-generation run that
+produced `captions.json`.
 """
 from PIL import Image
 
@@ -63,6 +73,9 @@ def _load_itm(prefer="blip2"):
 
     import torch
 
+    def _params_mb(m):
+        return sum(p.numel() * p.element_size() for p in m.parameters()) / (1024 ** 2)
+
     if prefer == "blip2":
         try:
             from transformers import AutoProcessor, Blip2ForImageTextRetrieval
@@ -72,6 +85,8 @@ def _load_itm(prefer="blip2"):
                 BLIP2_ITM_MODEL, torch_dtype=dtype
             ).to(DEVICE).eval()
             _itm_kind = "blip2"
+            print(f"[blip2] Loaded BLIP-2 ITM ({BLIP2_ITM_MODEL}), "
+                  f"{_params_mb(_itm_model):.0f} MB on {DEVICE} (dtype={dtype}).")
             return _itm_model, _itm_processor, _itm_kind
         except Exception as e:
             print(f"[blip2] BLIP-2 ITM failed to load ({e}); falling back to BLIP-1.")
@@ -85,6 +100,8 @@ def _load_itm(prefer="blip2"):
         _itm_model = _itm_model.half()
     _itm_model = _itm_model.to(DEVICE).eval()
     _itm_kind = "blip1"
+    print(f"[blip2] Loaded BLIP-1 ITM fallback ({BLIP_ITM_MODEL}), "
+          f"{_params_mb(_itm_model):.0f} MB on {DEVICE}.")
     return _itm_model, _itm_processor, _itm_kind
 
 
